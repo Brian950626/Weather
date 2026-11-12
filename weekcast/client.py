@@ -11,7 +11,18 @@ import urllib.request
 from dataclasses import dataclass
 
 from . import __version__
-from .systems import BY_API_ID, DAILY_VARS, HOURLY_VARS, SYSTEMS
+from .systems import (
+    BY_API_ID,
+    CROSS_SYSTEM_ID,
+    CROSS_VARS,
+    DAILY_VARS,
+    HOURLY_VARS,
+    NS_OFFSETS,
+    PROFILE_VARS,
+    SYSTEMS,
+    UPPER_SYSTEM_IDS,
+    WE_OFFSETS,
+)
 
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
@@ -119,6 +130,67 @@ def fetch_ensemble(latitude: float, longitude: float, days: int = 7, system_ids=
         },
         timeout=90,
     )
+
+
+def cross_points(latitude: float, longitude: float) -> list[dict]:
+    """十字剖面上的各點:東西向沿測站緯度,南北向沿測站經度。"""
+    points = [
+        {"axis": "we", "offset": o, "latitude": latitude, "longitude": (longitude + o + 180) % 360 - 180}
+        for o in WE_OFFSETS
+    ]
+    points += [
+        {"axis": "ns", "offset": o, "latitude": latitude + o, "longitude": longitude}
+        for o in NS_OFFSETS
+        if abs(latitude + o) <= 85
+    ]
+    return points
+
+
+def fetch_upper(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
+    """取得高空分析所需的資料:測站垂直剖面與十字剖面(每 6 小時一筆)。
+
+    timezone 要與地面資料相同,逐日彙整時日期才對得起來;十字剖面橫跨多個
+    時區,所以不能用 auto。
+    """
+    common = {
+        "timezone": timezone,
+        "forecast_days": days,
+        "temporal_resolution": "hourly_6",
+        "wind_speed_unit": "ms",
+    }
+    profile = _get_json(
+        ENSEMBLE_URL,
+        common
+        | {
+            "latitude": f"{latitude:.4f}",
+            "longitude": f"{longitude:.4f}",
+            "hourly": ",".join(PROFILE_VARS),
+            "models": ",".join(UPPER_SYSTEM_IDS),
+        },
+        timeout=90,
+    )
+    points = cross_points(latitude, longitude)
+    data = _get_json(
+        ENSEMBLE_URL,
+        common
+        | {
+            "latitude": ",".join(f"{p['latitude']:.2f}" for p in points),
+            "longitude": ",".join(f"{p['longitude']:.2f}" for p in points),
+            "hourly": ",".join(CROSS_VARS),
+            "models": CROSS_SYSTEM_ID,
+        },
+        timeout=120,
+    )
+    if not isinstance(data, list) or len(data) != len(points):
+        raise FetchError("十字剖面的回應格式不符預期")
+    return {"profile": profile, "cross": {"points": points, "data": data}}
+
+
+def split_bundle(raw: dict) -> tuple[dict, dict | None]:
+    """把存檔拆成 (地面資料, 高空資料)。舊格式的存檔只有地面資料。"""
+    if "surface" in raw:
+        return raw["surface"], raw.get("upper")
+    return raw, None
 
 
 def load_raw(path: str) -> dict:

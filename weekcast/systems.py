@@ -43,3 +43,38 @@ HOURLY_VARS = (
     "temperature_850hPa",
     "geopotential_height_500hPa",
 )
+
+# --- 高空分析 ---------------------------------------------------------------
+# 只有 ECMWF 的兩套系集在 Open-Meteo 上提供完整的氣壓層資料;GEPS 只有
+# 500/850 hPa 的高度與溫度,GEFS 與 ICON 沒有氣壓層資料。
+UPPER_SYSTEM_IDS = ("ecmwf_ifs025", "ecmwf_aifs025")
+CROSS_SYSTEM_ID = "ecmwf_ifs025"
+
+# 測站上空的垂直剖面(所有成員)
+PROFILE_VARS = (
+    "wind_speed_250hPa",
+    "wind_direction_250hPa",
+    "geopotential_height_500hPa",
+    "temperature_500hPa",
+    "wind_speed_500hPa",
+    "wind_direction_500hPa",
+    "temperature_700hPa",
+    "relative_humidity_700hPa",
+    "temperature_850hPa",
+    "relative_humidity_850hPa",
+    "wind_speed_850hPa",
+    "wind_direction_850hPa",
+    "temperature_925hPa",
+    "wind_speed_925hPa",
+    "wind_direction_925hPa",
+)
+
+# 十字剖面:沿測站緯度的東西向(找槽脊)與沿測站經度的南北向(找噴流軸)
+CROSS_VARS = (
+    "geopotential_height_500hPa",
+    "wind_speed_250hPa",
+    "wind_direction_250hPa",
+    "temperature_850hPa",
+)
+WE_OFFSETS = tuple(range(-40, 41, 5))  # 經度偏移(度)
+NS_OFFSETS = tuple(o for o in range(-20, 21, 5) if o)  # 緯度偏移(度),不含測站本身

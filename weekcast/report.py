@@ -8,6 +8,7 @@ from datetime import date
 
 from .analysis import DayForecast, Ensemble, Signal
 from .history import Comparison
+from .upper import UpperDay, compass, trough_passage
 
 
 def _width(text: str) -> int:
@@ -130,12 +131,117 @@ def uncertainty(forecast: list[DayForecast]) -> list[str]:
     return out
 
 
+def _signed(value: float | None, digits: int = 1) -> str:
+    return "–" if value is None else f"{value:+.{digits}f}"
+
+
+def _wind(direction: float | None, speed: float | None) -> str:
+    return "–" if direction is None or speed is None else f"{compass(direction)} {speed:.0f}"
+
+
+def _flow(row: UpperDay) -> str:
+    """500 hPa 型態,附上最近槽線的位置。"""
+    if row.regime in ("槽前", "槽後") and row.trough is not None:
+        side = "西" if row.trough < 0 else "東"
+        return f"{row.regime}(槽在{side} {abs(row.trough):.0f}°)"
+    return row.regime or "–"
+
+
+def _jet(row: UpperDay) -> str:
+    if row.jet_core is None:
+        return "–"
+    if not row.has_jet:
+        return f"無({row.jet_core:.0f})"
+    if row.jet_offset == 0:
+        return f"上空 {row.jet_core:.0f}"
+    far = "+" if row.jet_at_edge else ""  # 最大風速在剖面邊緣,噴流軸可能更遠
+    return f"{'北' if row.jet_offset > 0 else '南'} {abs(row.jet_offset)}°{far} {row.jet_core:.0f}"
+
+
+def _upper_table(rows: list[UpperDay]) -> list[str]:
+    head = ["日期", "250風", "噴流軸", "輻散", "500槽脊", "高度m", "700濕度", "850溫/濕/風", "平流", "925風", "K"]
+    table = [head]
+    for r in rows:
+        low = "–" if r.t850 is None or r.rh850 is None else f"{r.t850:.0f}°C {r.rh850:.0f}% {_wind(r.dir850, r.wind850)}"
+        table.append(
+            [
+                _label(r.day),
+                _wind(r.dir250, r.wind250),
+                _jet(r),
+                _signed(r.div250),
+                _flow(r),
+                "–" if r.z500 is None else f"{r.z500:.0f}" + (" 副高" if r.subtropical_high else ""),
+                "–" if r.rh700 is None else f"{r.rh700:.0f}%",
+                low,
+                _signed(r.tadv850),
+                _wind(r.dir925, r.wind925),
+                "–" if r.k is None else f"{r.k:.0f}",
+            ]
+        )
+    widths = [max(_width(row[i]) for row in table) for i in range(len(head))]
+    lines = ["  ".join(_pad(cell, widths[i]) for i, cell in enumerate(row)).rstrip() for row in table]
+    lines.insert(1, "  ".join("─" * w for w in widths))
+    return lines
+
+
+def upper_impact(rows: list[UpperDay], forecast: list[DayForecast], southern: bool = False) -> list[str]:
+    """把高空研判和地面的系集預報對照,說明高空如何影響地面天氣。"""
+    out = []
+    before, after = ("偏北風", "偏南風") if southern else ("偏南風", "偏北風")  # 槽前的風來自赤道一側
+    passage = trough_passage(rows)
+    if passage:
+        first, second = passage
+        when = f" {_label(first)} 過境" if first == second else f"在 {_label(first)} 到 {_label(second)} 之間通過"
+        out.append(f"槽線:500 hPa 槽線{when},通過前高空吹{before}、較易有雨,通過後轉{after}。")
+    jets = [r for r in rows if r.has_jet and abs(r.jet_offset) <= 10]  # 太遠的噴流影響不到本地
+    if jets:
+        peak = max(jets, key=lambda r: r.jet_core)
+        close = min(jets, key=lambda r: abs(r.jet_offset))
+        where = "正上方" if close.jet_offset == 0 else f"{'北' if close.jet_offset > 0 else '南'}方 {abs(close.jet_offset)}°"
+        out.append(
+            f"噴流:250 hPa 噴流軸最強 {peak.jet_core:.0f} m/s({_label(peak.day)}),"
+            f"最接近時在{where}({_label(close.day)})。"
+        )
+
+    surface = {fc.day: fc for fc in forecast}
+    previous = None
+    for row in rows:
+        fc = surface.get(row.day)
+        reasons = row.lift + row.sink
+        text = row.verdict + (f"({'、'.join(reasons)})" if reasons else "")
+        if fc:
+            wet, dry = fc.pop >= 0.6, fc.pop < 0.3
+            if row.outlook in ("wet", "showery") and dry:
+                text += f";但系集降雨機率只有 {fc.pop:.0%},留意之後上修"
+            elif row.outlook == "wet" and wet:
+                text += f";與系集降雨機率 {fc.pop:.0%} 一致"
+            elif row.outlook == "shallow" and wet:
+                text += f";降雨機率雖有 {fc.pop:.0%},雨量不大(中位數 {fc.precip.p50:.0f} mm)"
+            elif row.outlook == "stable" and wet:
+                text += f";但系集降雨機率 {fc.pop:.0%},雨應來自低層或地形,高空並不支持"
+            elif row.outlook == "stable" and dry:
+                text += ";與系集少雨一致"
+        extras = []
+        if row.wind925 is not None and row.rh850 is not None and row.wind925 >= 8 and row.rh850 >= 80:
+            extras.append(f"925 hPa {compass(row.dir925)}風 {row.wind925:.0f} m/s 輸送低層水氣,迎風面易有地形雨")
+        if previous is not None and row.t925 is not None and previous.t925 is not None:
+            change = row.t925 - previous.t925
+            if change <= -3:
+                extras.append(f"925 hPa 一天降溫 {abs(change):.0f}°C,低層冷空氣移入")
+            elif change >= 3:
+                extras.append(f"925 hPa 一天升溫 {change:.0f}°C")
+        out.append(f"{_label(row.day)}:{text}。" + "".join(f"{e}。" for e in extras))
+        previous = row
+    return out
+
+
 def render(
     place_name: str,
     ens: Ensemble,
     forecast: list[DayForecast],
     signal_list: list[Signal],
     comparison: Comparison | None = None,
+    upper_days: list[UpperDay] | None = None,
 ) -> str:
     meta = ens.meta
     lat, lon = meta.get("latitude") or 0.0, meta.get("longitude") or 0.0
@@ -158,6 +264,15 @@ def render(
         for s in signal_list:
             by_day.setdefault(s.day, []).append(s.text)
         lines += [f"• {_label(day)}:" + ";".join(texts) + "。" for day, texts in by_day.items()]
+    if upper_days:
+        lines += [
+            "",
+            "高空分析(ECMWF 與 AIFS 系集的中位數;風速 m/s,輻散 10⁻⁵/s,平流 °C/日)",
+            *_upper_table(upper_days),
+            "",
+            "高空對地面的影響",
+            *(f"• {line}" for line in upper_impact(upper_days, forecast, lat < 0)),
+        ]
     notes = uncertainty(forecast)
     if notes:
         lines += ["", "不確定性"]
@@ -181,10 +296,16 @@ def render(
         "「偏多」雨量是 90 百分位。各模式整週固定的溫度偏差已先校正到多模式共識。",
         "信心分數越低,代表成員或模式之間越不一致。",
     ]
+    if upper_days:
+        lines += [
+            "高空表:噴流軸欄是 250 hPa 最大風速的位置(相對測站)與風速,未達 30 m/s 記為無,",
+            "「20°+」表示在分析範圍邊緣、可能更遠;槽脊欄的度數是槽線相對測站的經度距離;",
+            "輻散為正代表高層空氣流出、有利下方上升;平流為正是暖平流;K 指數 30 以上容易有雷雨。",
+        ]
     return "\n".join(lines)
 
 
-def to_json(place_name, ens, forecast, signal_list, comparison=None) -> dict:
+def to_json(place_name, ens, forecast, signal_list, comparison=None, upper_days=None) -> dict:
     return {
         "place": place_name,
         "location": ens.meta,
@@ -193,6 +314,12 @@ def to_json(place_name, ens, forecast, signal_list, comparison=None) -> dict:
         "signals": [asdict(s) for s in signal_list],
         "highlights": highlights(forecast),
         "uncertainty": uncertainty(forecast),
+        "upper": None
+        if not upper_days
+        else {
+            "days": [asdict(r) for r in upper_days],
+            "impact": upper_impact(upper_days, forecast, (ens.meta.get("latitude") or 0.0) < 0),
+        },
         "comparison": None
         if comparison is None
         else {
