@@ -163,41 +163,127 @@ def _caution(fc: DayForecast) -> str:
     return ""
 
 
-def overview(forecast: list[DayForecast], upper_days: list[UpperDay] | None) -> str:
-    """整週一段話:先講結論。"""
+@dataclass
+class WeekSummary:
+    """整週的總結:先講結論,再講經過、原因與要注意的事。"""
+
+    headline: str  # 一句話
+    story: list[str]  # 依時間順序,一段天氣一句
+    cause: str  # 為什麼(白話)
+    watch: list[str]  # 最需要注意的事
+
+    def text(self) -> str:
+        parts = [self.headline, "".join(self.story)]
+        if self.cause:
+            parts.append(self.cause)
+        if self.watch:
+            parts.append("要注意:" + ";".join(self.watch) + "。")
+        return "".join(parts)
+
+
+def _kind(fc: DayForecast) -> str:
+    return "wet" if fc.pop >= 0.6 else "maybe" if fc.pop >= 0.3 else "dry"
+
+
+def _span(days: list[DayForecast]) -> str:
+    return _label(days[0].day) if len(days) == 1 else f"{_label(days[0].day)}到{_label(days[-1].day)}"
+
+
+def _temps(days: list[DayForecast]) -> str:
+    low, high = min(f.tmax.p50 for f in days), max(f.tmax.p50 for f in days)
+    return f"白天約 {high:.0f} 度" if round(high) == round(low) else f"白天約 {low:.0f}–{high:.0f} 度"
+
+
+def _segment(days: list[DayForecast], previous: list[DayForecast] | None) -> str:
+    kind = _kind(days[0])
+    if kind == "wet":
+        heavy = any(f.precip.p90 >= 30 for f in days)
+        light = all(f.precip.p50 < 5 for f in days)
+        what = "容易下雨" + (",雨勢可能不小" if heavy else ",但雨量不大" if light else "")
+    elif kind == "maybe":
+        what = "雲多、可能下雨,不一定每個地方都下"
+    else:
+        cover = [f.cloud.p50 for f in days if f.cloud]
+        what = "天氣穩定、" + ("多雲到晴" if cover and sum(cover) / len(cover) < 70 else "雲量偏多但不太會下雨")
+    change = ""
+    if previous:
+        delta = days[0].tmax.p50 - previous[-1].tmax.p50
+        if delta <= -3:
+            change = ",而且明顯變涼"
+        elif delta >= 3:
+            change = ",氣溫回升"
+    lead = "接著 " if previous else ""
+    return f"{lead}{_span(days)}{what}{change},{_temps(days)}。"
+
+
+def week_summary(forecast: list[DayForecast], upper_days: list[UpperDay] | None = None) -> WeekSummary | None:
     if not forecast:
-        return ""
+        return None
     wet = [f for f in forecast if f.pop >= 0.6]
     dry = [f for f in forecast if f.pop < 0.3]
-    warm, cool = max(forecast, key=lambda f: f.tmax.p50), min(forecast, key=lambda f: f.tmax.p50)
-    parts = []
-    if not wet:
-        parts.append("這一週大致沒有明顯降雨")
+    if not wet and len(dry) == len(forecast):
+        headline = "未來一週天氣穩定,幾乎不會下雨。"
     elif len(wet) == len(forecast):
-        parts.append("這一週幾乎天天都容易下雨")
+        headline = "未來一週幾乎天天都容易下雨。"
+    elif not wet:
+        headline = "未來一週沒有明顯的降雨,但有幾天雲多、可能飄點雨。"
+    elif _kind(forecast[0]) == "dry" and _kind(forecast[-1]) != "dry":
+        turn = next(f for f in forecast if _kind(f) != "dry")
+        headline = f"未來一週前好後壞:前面幾天穩定,{_label(turn.day)}起轉為有雨。"
+    elif _kind(forecast[0]) != "dry" and _kind(forecast[-1]) == "dry":
+        headline = "未來一週前壞後好:前面幾天有雨,之後轉為穩定。"
     else:
-        parts.append("這一週比較會下雨的是 " + "、".join(_label(f.day) for f in wet))
-        if dry:
-            parts.append("天氣最好的是 " + "、".join(_label(f.day) for f in dry))
-    if warm.tmax.p50 - cool.tmax.p50 >= 3:
-        parts.append(f"氣溫最高在 {_label(warm.day)}(約 {warm.tmax.p50:.0f} 度),最低在 {_label(cool.day)}(約 {cool.tmax.p50:.0f} 度)")
-    else:
-        parts.append(f"白天氣溫變化不大,約 {cool.tmax.p50:.0f}–{warm.tmax.p50:.0f} 度")
-    text = ";".join(parts) + "。"
+        headline = f"未來一週有 {len(wet)} 天容易下雨、{len(dry)} 天穩定,好壞天氣交替。"
+
+    groups: list[list[DayForecast]] = []
+    for fc in forecast:
+        if groups and _kind(groups[-1][-1]) == _kind(fc):
+            groups[-1].append(fc)
+        else:
+            groups.append([fc])
+    story = [_segment(g, groups[i - 1] if i else None) for i, g in enumerate(groups)]
+
+    cause = ""
     if upper_days:
         approaching = [u for u in upper_days if u.lift and u.regime in ("槽前", "槽線過境")]
         stable = [u for u in upper_days if u.outlook == "stable"]
         shallow = [u for u in upper_days if u.outlook == "shallow"]
+        cold = [b for a, b in zip(upper_days, upper_days[1:]) if a.t925 is not None and b.t925 is not None and b.t925 - a.t925 <= -3]
         notes = []
         if approaching:
-            notes.append(f"{_label(approaching[0].day)} 前後有一道高空低壓帶接近,是這週天氣轉變的主因")
+            notes.append(f"{_label(approaching[0].day)}前後有一道高空的低壓帶接近,是天氣轉壞的主因")
+        if cold:
+            notes.append(f"{_label(cold[0].day)}有一波冷空氣從近地面移入,所以會變涼")
         if shallow and wet:
-            notes.append("下雨的日子多半是低雲造成的小雨,不是大範圍的強降雨")
+            notes.append("下雨的日子多半是低雲帶來的小雨,不是大範圍的強降雨")
         if stable and not approaching:
-            notes.append("高空以高壓為主,天氣穩定")
+            notes.append("高空以高壓為主,所以天氣穩定")
         if notes:
-            text += "從高空來看," + ";".join(notes) + "。"
-    return text
+            cause = "原因:" + ";".join(notes) + "。"
+
+    watch = []
+    heavy = [f for f in forecast if f.pop >= 0.6 and f.precip.p90 >= 30]
+    if heavy:
+        watch.append("、".join(_label(f.day) for f in heavy) + "雨勢可能較大")
+    cooling = [b for a, b in zip(forecast, forecast[1:]) if b.tmax.p50 - a.tmax.p50 <= -3]
+    if cooling:
+        watch.append("、".join(_label(f.day) for f in cooling) + "明顯變涼,記得加衣服")
+    hot = [f for f in forecast if f.tmax.p50 >= 33]
+    if hot:
+        watch.append("、".join(_label(f.day) for f in hot) + "很熱,注意防曬補水")
+    windy = [f for f in forecast if (f.gust and f.gust.p90 >= 55) or (f.wind and f.wind.p50 >= 35)]
+    if windy:
+        watch.append("、".join(_label(f.day) for f in windy) + "風大")
+    unsure = [f for f in forecast if f.confidence_label == "低"]
+    if unsure:
+        watch.append("、".join(_label(f.day) for f in unsure) + "的預報還不確定,出門前再看一次")
+    return WeekSummary(headline, story, cause, watch)
+
+
+def overview(forecast: list[DayForecast], upper_days: list[UpperDay] | None) -> str:
+    """整週的總結,一段文字。"""
+    summary = week_summary(forecast, upper_days)
+    return summary.text() if summary else ""
 
 
 def plain_days(

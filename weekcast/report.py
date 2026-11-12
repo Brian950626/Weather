@@ -325,6 +325,19 @@ def comparison_lines(comparison: Comparison) -> list[str]:
     return [f"{_label(day)}:" + ";".join(parts) + "。" for day, parts in sorted(notes.items())]
 
 
+def week_lines(forecast, upper_days) -> list[str]:
+    """報表最前面的白話總結:未來一週會怎樣。"""
+    summary = plain.week_summary(forecast, upper_days)
+    if not summary:
+        return []
+    lines = ["未來一週天氣總結", summary.headline, *(f"• {s}" for s in summary.story)]
+    if summary.cause:
+        lines.append(summary.cause)
+    if summary.watch:
+        lines.append("要注意:" + ";".join(summary.watch) + "。")
+    return [*lines, ""]
+
+
 def render(
     place_name: str,
     ens: Ensemble,
@@ -345,6 +358,7 @@ def render(
         f"{where} · 時區 {meta.get('timezone') or 'UTC'} · 模式格點海拔 {meta.get('elevation') or 0:.0f} m",
         f"資料:{counts} = {total} 個系集成員",
         "",
+        *week_lines(forecast, upper_days),
     ]
     if brief is not None:  # 先講結論:這一週分成哪幾段
         lines += [brief.lede, *(f"• 時段{'一二三'[s.index - 1]} {s.summary}" for s in brief.stages), ""]
@@ -371,7 +385,7 @@ def render(
     if notes:
         lines += ["", "不確定性"]
         lines += [f"• {n}" for n in notes]
-    lines += ["", "白話總結:這一週的天氣、原因與影響", plain.overview(forecast, upper_days), ""]
+    lines += ["", "白話總結:每天的天氣、原因與怎麼準備"]
     lines += [f"• {d.text()}" for d in plain.plain_days(forecast, upper_days, period_list, lat < 0)]
     if upper_days:
         lines += ["", "名詞對照"] + [f"• {term}:{meaning}" for term, meaning in plain.GLOSSARY]
@@ -406,6 +420,7 @@ def to_json(place_name, ens, forecast, signal_list, comparison=None, upper_days=
         "uncertainty": uncertainty(forecast),
         "plain": {
             "overview": plain.overview(forecast, upper_days),
+            "week": asdict(plain.week_summary(forecast, upper_days)),
             "days": [
                 asdict(d) | {"text": d.text()}
                 for d in plain.plain_days(forecast, upper_days, period_list, (ens.meta.get("latitude") or 0.0) < 0)
