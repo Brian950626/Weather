@@ -27,6 +27,7 @@ from .systems import (
 
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"  # 過去幾天的分析資料,校驗用
 USER_AGENT = f"weekcast/{__version__}"
 MINUTE_WAIT = 62  # 秒;Open-Meteo 的每分鐘額度
 MAX_MINUTE_WAITS = 4
@@ -232,6 +233,21 @@ def fetch_upper(latitude: float, longitude: float, days: int = 7, timezone: str 
 def fetch_periods(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
     """取得時段預報所需的資料:每 3 小時一筆的氣溫、雨量、雲量(所有成員)。"""
     return _get_json(ENSEMBLE_URL, period_params(latitude, longitude, days, timezone), timeout=90)
+
+
+def fetch_observed(latitude: float, longitude: float, timezone: str = "GMT", past_days: int = 8) -> dict:
+    """取得過去幾天的逐日高低溫與雨量(Open-Meteo 的分析資料),校驗用。"""
+    return _get_json(
+        FORECAST_URL,
+        {
+            "latitude": f"{latitude:.4f}",
+            "longitude": f"{longitude:.4f}",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
+            "timezone": timezone,
+            "past_days": past_days,
+            "forecast_days": 1,
+        },
+    )
 
 
 def split_bundle(raw: dict) -> tuple[dict, dict | None]:

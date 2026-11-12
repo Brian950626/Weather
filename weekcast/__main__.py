@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import analysis, client, history, periods, report, upper
+from . import analysis, briefing, client, history, periods, report, upper
 from .systems import SYSTEMS
 
 
@@ -104,7 +104,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(report.to_json(name, ens, forecast, signal_list, comparison, upper_days, period_list), ensure_ascii=False, indent=2))
     else:
-        print(report.render(name, ens, forecast, signal_list, comparison, upper_days, period_list))
+        lat, lon = ens.meta.get("latitude") or 0.0, ens.meta.get("longitude") or 0.0
+        brief = briefing.build(forecast, signal_list, analysis.patterns(ens), upper_days, lat, lon)
+        print(report.render(name, ens, forecast, signal_list, comparison, upper_days, period_list, brief))
     return 0
 
 

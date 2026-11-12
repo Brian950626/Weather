@@ -181,6 +181,8 @@ class Spread:
     p10: float
     p50: float
     p90: float
+    p25: float | None = None  # 四分位數:系集氣象圖的「方框」
+    p75: float | None = None
 
     @property
     def width(self) -> float:
@@ -190,7 +192,7 @@ class Spread:
     def of(cls, pairs: Pairs) -> "Spread | None":
         if not pairs:
             return None
-        return cls(wquantile(pairs, 0.1), wquantile(pairs, 0.5), wquantile(pairs, 0.9))
+        return cls(*(wquantile(pairs, q) for q in (0.1, 0.5, 0.9, 0.25, 0.75)))
 
 
 @dataclass
@@ -219,6 +221,7 @@ class DayForecast:
     system_tmax: dict[str, float]  # 各系集的高溫中位數
     system_pop: dict[str, float]  # 各系集的降雨機率
     members: int
+    system_precip: dict[str, float] = field(default_factory=dict)  # 各系集的日雨量中位數
     confidence: int = 0
     confidence_label: str = ""
     sky: str = ""
@@ -256,8 +259,30 @@ def score_confidence(lead: int, t_spread: float, t_gap: float, pop: float, pop_g
     return max(0, round(score))
 
 
-def confidence_label(score: int) -> str:
-    return "高" if score >= 70 else "中" if score >= 45 else "低"
+CONFIDENCE_LEVELS = ((80, "高"), (65, "中高"), (50, "中"), (35, "中低"))
+
+
+def confidence_label(score: float) -> str:
+    """五級信心度:高、中高、中、中低、低(和預報報告用的分級相同)。"""
+    return next((label for floor, label in CONFIDENCE_LEVELS if score >= floor), "低")
+
+
+def confidence_reasons(fc: "DayForecast") -> list[str]:
+    """信心度的理由:哪幾個扣分項起了作用。對應報告「各時段信心度」表的理由欄。"""
+    out = []
+    if fc.tmax.width > 3:
+        out.append(f"成員的高溫分散({fc.tmax.p10:.0f}–{fc.tmax.p90:.0f}°C)")
+    if fc.tmax_gap >= 2:
+        out.append(f"各模式高溫相差 {fc.tmax_gap:.0f}°C")
+    if fc.pop_gap >= 0.4:
+        out.append(f"各模式降雨機率相差 {fc.pop_gap * 100:.0f} 個百分點")
+    if 0.3 <= fc.pop <= 0.7:
+        out.append(f"下不下雨不明確(降雨機率 {fc.pop:.0%})")
+    if fc.lead >= 5:
+        out.append("預報時效較遠")
+    if not out:
+        out.append("成員集中、各模式一致" if len(fc.system_pop) > 1 else "成員集中")
+    return out
 
 
 def describe_sky(pop: float, precip: Spread, cloud: Spread | None) -> str:
@@ -341,6 +366,7 @@ def daily_forecast(ens: Ensemble, days: int | None = None) -> list[DayForecast]:
             system_tmax={s: median(v) for s, v in tmax_sys.items()},
             system_pop={s: sum(x >= RAIN_MM for x in v) / len(v) for s, v in rain_sys.items()},
             members=sum(len(v) for v in tmax_sys.values()),
+            system_precip={s: median(v) for s, v in rain_sys.items()},
         )
         fc.confidence = score_confidence(fc.lead, fc.tmax.width, fc.tmax_gap, fc.pop, fc.pop_gap)
         fc.confidence_label = confidence_label(fc.confidence)
