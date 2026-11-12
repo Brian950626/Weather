@@ -2,9 +2,9 @@
 
 地面的雨和溫度是結果,原因在上面。這個模組用「成分法」把原因拆開來看:
 
-- 舉升:500 hPa 槽前、250 hPa 高層輻散、850 hPa 暖平流
-- 水氣:850 hPa(低層)與 700 hPa(中層)的相對濕度
-- 不穩定:K 指數(850、700、500 hPa 的溫度與露點)
+- 舉升:500 hPa 槽前、250 hPa 高層輻散、850 hPa 暖平流、925 hPa 低層鋒面(風向轉變)
+- 水氣:850 hPa(低層)與 700 hPa(中層)的相對濕度,加上整層的可降水量(PWAT)
+- 不穩定:K 指數(850、700、500 hPa 的溫度與露點)與 CAPE
 
 三者俱備才會有系統性降雨;只有低層水氣而中層乾,雨就只來自淺層的雲。
 
@@ -17,12 +17,18 @@
 - 垂直剖面:測站上空各層,ECMWF 與 AIFS 兩套系集。
 - 十字剖面:500 hPa 高度沿測站緯度往東西各 40°(找槽線與脊線),250 hPa 風
   沿測站經度往南北各 20°(找噴流軸),ECMWF 系集。相鄰點同時用來算水平梯度。
+
+逐日彙整時要小心「先平均再計算」:鋒面通過的那一天,低層風會從西風轉成東北風,
+把一天四筆的 u、v 直接平均,兩個方向互相抵銷,風速會被低估、風向轉變也看不到。
+所以風速取各時刻風速的平均,溫度平流逐時刻計算後再平均,風向轉變則直接在
+6 小時一筆的序列上找。
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from .analysis import _section, wquantile
 from .systems import CROSS_VARS, PROFILE_VARS
@@ -33,6 +39,14 @@ JET_SPEED = 30.0  # m/s,250 hPa 風速達此值視為噴流
 SUBTROPICAL_HIGH = 5880.0  # m,500 hPa 副熱帶高壓的慣用特徵線
 NEAR_AXIS = 5.0  # 槽線或脊線在這個經度範圍內,視為正在測站上空
 LIFT_RANGE = 15.0  # 槽線在西方這個範圍內,槽前的舉升才算影響得到測站
+K_UNSTABLE = 30.0  # K 指數達此值視為不穩定
+CAPE_UNSTABLE = 1000.0  # J/kg,CAPE 達此值視為不穩定
+PWAT_RICH = 50.0  # mm,可降水量達此值代表整層水氣充沛
+SHIFT_TURN = 80.0  # 度,12 小時內低層風向轉這麼多才算風向轉變
+SHIFT_SPEED = 3.0  # m/s,轉變後的風要有這個強度
+SHIFT_FROM_SPEED = 2.0  # m/s,轉變前的風太弱時風向沒有意義
+SHIFT_POLEWARD = 70.0  # 度,轉變後的風向與正北(南半球為正南)的夾角上限
+SHIFT_MIN_LATITUDE = 15.0  # 更靠近赤道的地方沒有鋒面
 
 
 # --------------------------------------------------------------------------- #
@@ -107,12 +121,92 @@ def _component(level: str, which: int):
     return extract
 
 
-def _daily(times: list[str], series: list) -> dict[str, float | None]:
-    """把逐時間步的數值依當地日期取平均。"""
+def _max(values):
+    kept = [v for v in values if v is not None]
+    return max(kept) if kept else None
+
+
+def _daily(times: list[str], series: list, reducer=_mean) -> dict[str, float | None]:
+    """把逐時間步的數值依當地日期彙整(預設取平均)。"""
     groups: dict[str, list] = {}
     for stamp, value in zip(times, series):
         groups.setdefault(stamp[:10], []).append(value)
-    return {day: _mean(values) for day, values in groups.items()}
+    return {day: reducer(values) for day, values in groups.items()}
+
+
+def _halves(times: list[str], series: list) -> dict[str, tuple[float | None, float | None]]:
+    """每一天前半與後半的平均,用來看一天之內的變化。少於四筆的日子不分。"""
+    groups: dict[str, list] = {}
+    for stamp, value in zip(times, series):
+        groups.setdefault(stamp[:10], []).append(value)
+    out = {}
+    for day, values in groups.items():
+        half = len(values) // 2
+        out[day] = (_mean(values[:half]), _mean(values[half:])) if len(values) >= 4 else (None, None)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# 低層風向轉變(鋒面通過)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class WindShift:
+    """低層風在短時間內轉成來自極地一側:冷鋒或冷空氣前緣通過測站的訊號。"""
+
+    start: str  # 轉變前最後一筆的時間
+    end: str  # 轉變後第一筆的時間
+    from_dir: float
+    to_dir: float
+    cooling: float | None = None  # 轉變後 24 小時內 925 hPa 降了幾度(沒有降溫則為 None)
+
+
+def _turn(a: float, b: float) -> float:
+    """兩個風向之間的夾角(0–180°)。"""
+    return abs((a - b + 180) % 360 - 180)
+
+
+def find_wind_shifts(times: list[str], u: list, v: list, temperature: list, latitude: float) -> dict[str, WindShift]:
+    """在逐時間步的低層風序列上找風向轉變,回傳 {日期: WindShift}。
+
+    條件:轉變後的風來自極地一側(北半球是西北到東北)且夠強,而且和 12 小時內
+    某一筆夠強的風相比,風向轉了 80° 以上。同一道鋒面只記一次(之後 24 小時內
+    不重複)。逐日平均看不到這種變化:西風 4 m/s 加東北風 7 m/s,平均起來只剩
+    北風 2 m/s。
+    """
+    if abs(latitude) < SHIFT_MIN_LATITUDE:
+        return {}
+    pole = 0.0 if latitude >= 0 else 180.0
+    stamps = [datetime.fromisoformat(t) for t in times]
+    known = lambda i: u[i] is not None and v[i] is not None
+    out: dict[str, WindShift] = {}
+    last = None
+    for k in range(1, len(times)):
+        if not known(k) or math.hypot(u[k], v[k]) < SHIFT_SPEED:
+            continue
+        direction = wind_direction(u[k], v[k])
+        if _turn(direction, pole) > SHIFT_POLEWARD:
+            continue
+        if last is not None and stamps[k] - stamps[last] < timedelta(hours=24):
+            continue
+        for j in range(k - 1, -1, -1):  # 由近到遠,取最近的一筆,轉變的時間範圍才不會被拉長
+            if stamps[k] - stamps[j] > timedelta(hours=12):
+                break
+            if not known(j) or math.hypot(u[j], v[j]) < SHIFT_FROM_SPEED:
+                continue
+            before = wind_direction(u[j], v[j])
+            if _turn(direction, before) < SHIFT_TURN:
+                continue
+            cooling = None
+            later = [i for i in range(k, len(times)) if stamps[i] - stamps[k] <= timedelta(hours=24) and temperature[i] is not None]
+            if temperature[j] is not None and later:
+                drop = temperature[j] - min(temperature[i] for i in later)
+                cooling = drop if drop > 0 else None
+            out[times[k][:10]] = WindShift(times[j], times[k], before, direction, cooling)
+            last = k
+            break
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -213,6 +307,8 @@ class UpperDay:
     subtropical_high: bool = False
     # 700 hPa
     rh700: float | None = None
+    rh700_early: float | None = None  # 當天前半的平均
+    rh700_late: float | None = None  # 當天後半的平均
     # 850 hPa
     t850: float | None = None
     rh850: float | None = None
@@ -223,8 +319,11 @@ class UpperDay:
     t925: float | None = None
     wind925: float | None = None
     dir925: float | None = None
+    shift: WindShift | None = None  # 當天的低層風向轉變(鋒面通過)
     # 綜合
     k: float | None = None
+    cape: float | None = None  # 當天各時刻的最大值,J/kg
+    pwat: float | None = None  # 可降水量,mm
     lift: list[str] = field(default_factory=list)
     sink: list[str] = field(default_factory=list)
     moisture: str = ""  # 深厚 / 淺層 / 乾燥 / 中等
@@ -234,6 +333,10 @@ class UpperDay:
     @property
     def has_jet(self) -> bool:
         return self.jet_core is not None and self.jet_core >= JET_SPEED
+
+    @property
+    def unstable(self) -> bool:
+        return (self.k is not None and self.k >= K_UNSTABLE) or (self.cape is not None and self.cape >= CAPE_UNSTABLE)
 
 
 def _assess(day: UpperDay) -> None:
@@ -258,6 +361,8 @@ def _assess(day: UpperDay) -> None:
             day.lift.append("850 hPa 暖平流")
         elif day.tadv850 <= -1.5:
             day.sink.append("850 hPa 冷平流")
+    if day.shift is not None:
+        day.lift.append("925 hPa 低層鋒面通過")
 
     low, mid = day.rh850, day.rh700
     if low is None or mid is None:
@@ -272,7 +377,7 @@ def _assess(day: UpperDay) -> None:
         day.moisture = "中等"
 
     net = len(day.lift) - len(day.sink)
-    unstable = day.k is not None and day.k >= 30
+    unstable = day.unstable
     thunder = ",且大氣不穩定,可能有雷雨" if unstable else ""
     if day.moisture == "淺層":
         day.outlook = "shallow"
@@ -308,11 +413,11 @@ def analyse(upper: dict, latitude: float, days: int | None = None) -> list[Upper
     site = _section(profile, "hourly", PROFILE_VARS)
     steps = range(len(times))
 
-    def daily(extract):
-        return _daily(times, [_pooled_median(site, extract, i) for i in steps])
+    def stepwise(extract):
+        return [_pooled_median(site, extract, i) for i in steps]
 
-    scalars = {
-        name: daily(_scalar(var))
+    series = {
+        name: stepwise(_scalar(var))
         for name, var in {
             "z500": "geopotential_height_500hPa",
             "t500": "temperature_500hPa",
@@ -321,22 +426,33 @@ def analyse(upper: dict, latitude: float, days: int | None = None) -> list[Upper
             "t850": "temperature_850hPa",
             "rh850": "relative_humidity_850hPa",
             "t925": "temperature_925hPa",
+            "pwat": "total_column_integrated_water_vapour",
+            "cape": "cape",
         }.items()
     }
-    winds = {level: (daily(_component(f"{level}hPa", 0)), daily(_component(f"{level}hPa", 1))) for level in (250, 500, 850, 925)}
+    scalars = {name: _daily(times, values, _max if name == "cape" else _mean) for name, values in series.items()}
+    rh700_halves = _halves(times, series["rh700"])
+    # 各層的風:u、v 逐時刻取成員中位數;風速另外取成員風速的中位數,不由 u、v 的平均反推
+    wind_steps = {level: (stepwise(_component(f"{level}hPa", 0)), stepwise(_component(f"{level}hPa", 1))) for level in (250, 500, 850, 925)}
+    winds = {level: (_daily(times, u), _daily(times, v)) for level, (u, v) in wind_steps.items()}
+    wind_speeds = {level: _daily(times, stepwise(_scalar(f"wind_speed_{level}hPa"))) for level in wind_steps}
+    shifts = find_wind_shifts(times, *wind_steps[925], series["t925"], latitude)
 
     # 十字剖面:每個點、每一天的成員中位數
     cross = upper["cross"]
     cross_times = cross["data"][0]["hourly"]["time"]
     grid: dict[tuple[str, int], dict[str, dict]] = {}
+    t850_steps: dict[tuple[str, int], list] = {}  # 逐時刻的 850 hPa 溫度,算平流用
     for point, data in zip(cross["points"], cross["data"]):
         one = _section(data, "hourly", CROSS_VARS)
-        series = lambda extract: _daily(cross_times, [_pooled_median(one, extract, i) for i in range(len(cross_times))])
-        grid[(point["axis"], point["offset"])] = {
-            "z500": series(_scalar("geopotential_height_500hPa")),
-            "t850": series(_scalar("temperature_850hPa")),
-            "u250": series(_component("250hPa", 0)),
-            "v250": series(_component("250hPa", 1)),
+        along = lambda extract: [_pooled_median(one, extract, i) for i in range(len(cross_times))]
+        where = (point["axis"], point["offset"])
+        t850_steps[where] = along(_scalar("temperature_850hPa"))
+        grid[where] = {
+            "z500": _daily(cross_times, along(_scalar("geopotential_height_500hPa"))),
+            "t850": _daily(cross_times, t850_steps[where]),
+            "u250": _daily(cross_times, along(_component("250hPa", 0))),
+            "v250": _daily(cross_times, along(_component("250hPa", 1))),
         }
     we_offsets = sorted(o for axis, o in grid if axis == "we")
     ns_offsets = sorted(o for axis, o in grid if axis == "ns")
@@ -345,14 +461,35 @@ def analyse(upper: dict, latitude: float, days: int | None = None) -> list[Upper
     dx = EARTH_RADIUS * math.cos(math.radians(latitude)) * math.radians(2 * STENCIL)
     dy = EARTH_RADIUS * math.radians(2 * STENCIL)
 
+    # 850 hPa 溫度平流 = −(u ∂T/∂x + v ∂T/∂y),逐時刻計算後再取日平均。
+    # 風和溫度梯度在鋒面通過當天都會變號,先各自平均再相乘會互相抵銷。
+    cross_index = {stamp: j for j, stamp in enumerate(cross_times)}
+    u850_steps, v850_steps = wind_steps[850]
+
+    def advection(i: int):
+        j = cross_index.get(times[i])
+        if j is None:
+            return None
+        corners = [t850_steps.get(key, [None] * len(cross_times))[j] for key in (("we", STENCIL), ("we", -STENCIL), ("ns", STENCIL), ("ns", -STENCIL))]
+        if None in corners or u850_steps[i] is None or v850_steps[i] is None:
+            return None
+        te, tw, tn, ts = corners
+        return -(u850_steps[i] * (te - tw) / dx + v850_steps[i] * (tn - ts) / dy) * 86400
+
+    tadv850 = _daily(times, [advection(i) for i in steps])
+
     out = []
     for day in list(dict.fromkeys(t[:10] for t in times))[: days or None]:
-        row = UpperDay(day=day, **{k: scalars[k][day] for k in ("z500", "t500", "rh700", "t850", "rh850", "t925")})
+        row = UpperDay(day=day, **{k: scalars[k][day] for k in ("z500", "t500", "rh700", "t850", "rh850", "t925", "pwat", "cape")})
+        row.rh700_early, row.rh700_late = rh700_halves[day]
+        row.shift = shifts.get(day)
         for level in (250, 500, 850, 925):
             speed_field, dir_field = f"wind{level}", f"dir{level}"
             u, v = winds[level][0][day], winds[level][1][day]
             if u is not None and v is not None:
-                setattr(row, speed_field, math.hypot(u, v))
+                # 風速是各時刻風速的平均;風向取向量平均的方向(一天內風向大轉變時見 shift)
+                speed = wind_speeds[level][day]
+                setattr(row, speed_field, speed if speed is not None else math.hypot(u, v))
                 setattr(row, dir_field, wind_direction(u, v))
 
         # 500 hPa 槽脊
@@ -376,18 +513,16 @@ def analyse(upper: dict, latitude: float, days: int | None = None) -> list[Upper
             row.jet_core = speeds[row.jet_offset]
             row.jet_at_edge = row.jet_offset in (min(speeds), max(speeds))
 
-        # 250 hPa 輻散 = ∂u/∂x + ∂v/∂y
+        # 250 hPa 輻散 = ∂u/∂x + ∂v/∂y − v·tanφ/a。最後一項是球面的修正:經線往極地
+        # 收攏,往極地吹的風即使風速不變也會輻合。
         ue, uw = at("we", STENCIL, "u250", day), at("we", -STENCIL, "u250", day)
         vn, vs = at("ns", STENCIL, "v250", day), at("ns", -STENCIL, "v250", day)
+        v0 = at("we", 0, "v250", day)
         if None not in (ue, uw, vn, vs):
-            row.div250 = ((ue - uw) / dx + (vn - vs) / dy) * 1e5
+            metric = v0 * math.tan(math.radians(latitude)) / EARTH_RADIUS if v0 is not None else 0.0
+            row.div250 = ((ue - uw) / dx + (vn - vs) / dy - metric) * 1e5
 
-        # 850 hPa 溫度平流 = −(u ∂T/∂x + v ∂T/∂y)
-        te, tw = at("we", STENCIL, "t850", day), at("we", -STENCIL, "t850", day)
-        tn, ts = at("ns", STENCIL, "t850", day), at("ns", -STENCIL, "t850", day)
-        u850, v850 = winds[850][0][day], winds[850][1][day]
-        if None not in (te, tw, tn, ts, u850, v850):
-            row.tadv850 = -(u850 * (te - tw) / dx + v850 * (tn - ts) / dy) * 86400
+        row.tadv850 = tadv850.get(day)
 
         t700 = scalars["t700"][day]
         if None not in (row.t850, row.rh850, t700, row.rh700, row.t500):

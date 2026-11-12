@@ -240,6 +240,47 @@ class HistoryTest(unittest.TestCase):
             history.record(Path(tmp), 25, 121.5, self.forecast, self.now - timedelta(hours=12))
             self.assertIsNone(history.compare(Path(tmp), 35, 139.7, self.forecast, self.now))
 
+    def runs(self, day, pops, tmax=25.0):
+        """先前各次起報(每 6 小時一次,由舊到新)對某一天的預報。"""
+        ages = range(6 * len(pops), 0, -6)
+        return [
+            {"at": (self.now - timedelta(hours=age)).isoformat(), "days": {day: {"tmax": tmax, "tmin": 20.0, "pop": pop}}}
+            for age, pop in zip(ages, pops)
+        ]
+
+    def test_repeated_revisions_in_one_direction_are_a_trend(self):
+        target = self.forecast[4]  # 11/16,降雨機率 72%
+        result = history.compare_runs(self.runs(target.day, [0.30, 0.45, 0.58]), self.forecast, self.now)
+        trend = next(t for t in result.trends if t.what == "pop")
+        self.assertEqual((trend.day, trend.kind), (target.day, "rising"))
+        self.assertEqual(len(trend.values), 4)
+        self.assertAlmostEqual(trend.values[-1], target.pop)
+        self.assertIn("降雨機率連續 3 次上修(30% → 45% → 58% → 72%)", "\n".join(report.comparison_lines(result)))
+
+    def test_flip_flopping_runs_are_reported_as_swinging(self):
+        target = self.forecast[4]
+        result = history.compare_runs(self.runs(target.day, [0.75, 0.40]), self.forecast, self.now)
+        trend = next(t for t in result.trends if t.what == "pop")
+        self.assertEqual(trend.kind, "swinging")
+        self.assertIn("來回擺盪", "\n".join(report.comparison_lines(result)))
+
+    def test_small_wobbles_are_not_a_trend(self):
+        target = self.forecast[4]
+        steady = self.runs(target.day, [target.pop - 0.04, target.pop + 0.03, target.pop - 0.02], target.tmax.p50)
+        result = history.compare_runs(steady, self.forecast, self.now)
+        self.assertEqual(result.trends, [])
+        self.assertEqual(report.comparison_lines(result), ["沒有明顯變化,預報穩定。"])
+
+    def test_runs_from_the_same_model_cycle_count_once(self):
+        target = self.forecast[4]
+        rows = self.runs(target.day, [0.30, 0.45])
+        # 一小時內重跑三次(例如推送程式碼觸發的重建)不能被當成連續三次上修
+        rows += [{"at": (self.now - timedelta(hours=h)).isoformat(), "days": {target.day: {"tmax": 25.0, "tmin": 20.0, "pop": pop}}} for h, pop in ((0.9, 0.5), (0.6, 0.55), (0.3, 0.6))]
+        result = history.compare_runs(rows, self.forecast, self.now)
+        self.assertAlmostEqual(result.age_hours, 6)
+        trend = next(t for t in result.trends if t.what == "pop")
+        self.assertEqual([round(v, 2) for v in trend.values[:-1]], [0.30, 0.45])
+
 
 class CliTest(unittest.TestCase):
     def run_cli(self, *args):
@@ -293,10 +334,10 @@ class CliTest(unittest.TestCase):
 
 
 def make_upper(days=2, z500=None, u250=None, v250=None, t850=None, site=None, latitude=40.0):
-    """合成的高空資料。z500/u250/v250/t850 是 (軸, 偏移) → 數值的函式。"""
+    """合成的高空資料。z500/u250/v250/t850 是 (軸, 偏移) → 數值的函式;site 的值可以是逐時刻的串列。"""
     times = [f"2026-01-0{d + 1}T{h:02d}:00" for d in range(days) for h in (0, 12)]
     n = len(times)
-    const = lambda value: [value] * n
+    const = lambda value: list(value) if isinstance(value, list) else [value] * n
     profile_values = {
         "wind_speed_250hPa": 40.0, "wind_direction_250hPa": 270.0,
         "geopotential_height_500hPa": 5600.0, "temperature_500hPa": -20.0,
@@ -455,6 +496,63 @@ class UpperAnalysisTest(unittest.TestCase):
         self.assertTrue(day.jet_at_edge)
         self.assertEqual(report._jet(day), "北 20°+ 80")
 
+    def test_wind_shift_to_the_cold_side_is_a_front(self):
+        times = [f"2026-01-0{d}T{h:02d}:00" for d in (1, 2) for h in (0, 6, 12, 18)]
+        winds = [upper.wind_components(s, d) for s, d in ((5, 250), (4, 260), (4, 270), (3, 265), (4, 350), (7, 40), (8, 50), (8, 50))]
+        u, v = [w[0] for w in winds], [w[1] for w in winds]
+        temperature = [18, 18, 19, 19, 17, 15, 13, 12]
+        shifts = upper.find_wind_shifts(times, u, v, temperature, 25.0)
+        self.assertEqual(list(shifts), ["2026-01-02"])  # 同一道鋒面只記一次
+        shift = shifts["2026-01-02"]
+        self.assertEqual((shift.start, shift.end), ("2026-01-01T18:00", "2026-01-02T00:00"))
+        self.assertEqual((upper.compass(shift.from_dir), upper.compass(shift.to_dir)), ("西", "北"))
+        self.assertAlmostEqual(shift.cooling, 7)
+        self.assertIn("之後一天內 925 hPa 降溫 7°C", report.shift_text(shift))
+        # 南半球的冷空氣從南邊來;赤道附近沒有鋒面;轉成偏南的暖風不算
+        self.assertEqual(upper.find_wind_shifts(times, u, v, temperature, -25.0), {})
+        self.assertEqual(upper.find_wind_shifts(times, u, v, temperature, 5.0), {})
+        self.assertEqual(list(upper.find_wind_shifts(times, u, [-x for x in v], temperature, -25.0)), ["2026-01-02"])
+
+    def test_wind_speed_survives_a_shift_within_the_day(self):
+        # 上半天西風 8、下半天東北風 8:向量平均幾乎抵銷,但風速仍是 8
+        turning = {"wind_speed_925hPa": [8.0, 8.0, 8.0, 8.0], "wind_direction_925hPa": [270.0, 45.0, 45.0, 45.0],
+                   "relative_humidity_850hPa": 90.0, "relative_humidity_700hPa": 80.0}
+        first, second = upper.analyse(make_upper(site=turning, latitude=25.0), 25.0)
+        self.assertAlmostEqual(first.wind925, 8)
+        self.assertIsNotNone(first.shift)
+        self.assertIn("925 hPa 低層鋒面通過", first.lift)
+        self.assertIsNone(second.shift)
+        self.assertIn("西→東北 8", report.upper_rows([first])[1])
+
+    def test_advection_is_computed_before_averaging(self):
+        # 北冷南暖;上半天南風(暖平流)、下半天北風(冷平流)而且更強。
+        # 風先平均再乘梯度會算成弱冷平流;逐時刻計算後平均才是對的。
+        colder_north = lambda axis, o: 8 - 0.8 * o if axis == "ns" else 8
+        swing = {"wind_speed_850hPa": [10.0, 20.0, 10.0, 10.0], "wind_direction_850hPa": [180.0, 0.0, 180.0, 180.0]}
+        day = upper.analyse(make_upper(t850=colder_north, site=swing), 40.0)[0]
+        gradient = -8 / (6_371_000 * math.radians(10))  # 往北每公尺降幾度
+        expected = (-(10 * gradient) - (-20 * gradient)) / 2 * 86400
+        self.assertAlmostEqual(day.tadv850, expected, places=3)
+        self.assertLess(day.tadv850, 0)
+
+    def test_divergence_includes_the_spherical_term(self):
+        # 風場各處都是南風 20 m/s:平面上沒有輻散,但經線往極地收攏,球面上是輻合
+        day = upper.analyse(make_upper(u250=lambda *_: 0.0, v250=lambda *_: 20.0, latitude=40.0), 40.0)[0]
+        self.assertAlmostEqual(day.div250, -20 * math.tan(math.radians(40)) / 6_371_000 * 1e5, places=3)
+
+    def test_cape_and_pwat_are_optional_and_cape_marks_instability(self):
+        plain = upper.analyse(make_upper(), 40.0)[0]
+        self.assertIsNone(plain.cape)
+        self.assertIsNone(plain.pwat)
+        self.assertFalse(plain.unstable)
+        juicy = {"cape": [200.0, 1500.0, 0.0, 0.0], "total_column_integrated_water_vapour": [60.0, 62.0, 40.0, 40.0]}
+        first, second = upper.analyse(make_upper(site=juicy), 40.0)
+        self.assertEqual((first.cape, first.pwat), (1500.0, 61.0))  # CAPE 取當天最大,PWAT 取平均
+        self.assertLess(first.k, upper.K_UNSTABLE)
+        self.assertTrue(first.unstable)  # K 指數不到 30,但 CAPE 夠大
+        self.assertFalse(second.unstable)
+        self.assertEqual(report.upper_rows([first])[1][-3:], ["61", f"{first.k:.0f}", "1500"])
+
     def test_trough_passage(self):
         row = lambda day, regime, trough: upper.UpperDay(day=day, regime=regime, trough=trough)
         self.assertEqual(
@@ -491,6 +589,26 @@ class RealUpperDataTest(unittest.TestCase):
         self.assertIn("11/15 日", text)
         self.assertIn("雨量不大", text)
 
+    def test_low_level_fronts_are_found_on_the_days_the_wind_turns(self):
+        self.assertEqual([d for d, r in self.rows.items() if r.shift], ["2026-11-15", "2026-11-18"])
+        surge = self.rows["2026-11-18"]
+        self.assertEqual((upper.compass(surge.shift.from_dir), upper.compass(surge.shift.to_dir)), ("西", "北"))
+        self.assertGreater(surge.shift.cooling, 5)  # 東北季風增強:一天內 925 hPa 降溫超過 5°C
+        # 逐日向量平均會把這天的風抵銷到只剩 2 m/s
+        self.assertGreater(surge.wind925, 4)
+        forecast = analysis.daily_forecast(load_surface(), 7)
+        line = next(t for t in report.upper_impact(list(self.rows.values()), forecast) if t.startswith("11/18"))
+        self.assertIn("低層鋒面", line)
+        self.assertIn("與系集降雨機率 97% 一致", line)
+
+    def test_mid_level_drying_within_the_day_is_reported(self):
+        day = self.rows["2026-11-15"]
+        self.assertGreater(day.rh700_early, 70)
+        self.assertLess(day.rh700_late, 30)
+        forecast = analysis.daily_forecast(load_surface(), 7)
+        line = next(t for t in report.upper_impact(list(self.rows.values()), forecast) if t.startswith("11/15"))
+        self.assertIn("中層在當天轉乾", line)
+
     def test_all_levels_are_filled(self):
         for row in self.rows.values():
             for name in ("wind250", "div250", "z500", "rh700", "t850", "tadv850", "wind925", "k"):
@@ -510,6 +628,48 @@ class SiteTest(unittest.TestCase):
         self.assertEqual(page.count('class="day"'), 7)
         self.assertEqual(page.count("<svg"), 2)
         self.assertEqual(len(data["places"]["台北"]["days"]), 7)
+
+    def test_trend_section_uses_the_previously_published_data(self):
+        from weekcast import site
+
+        now = datetime.now(timezone.utc)
+        days = {d: {"tmax": 25.0, "tmin": 20.0, "pop": pop} for d, pop in (("2026-11-16", 0.30), ("2026-11-17", 0.36))}
+        older = {d: v | {"pop": v["pop"] - 0.2 if d == "2026-11-16" else v["pop"]} for d, v in days.items()}
+        previous = {
+            "generated": (now - timedelta(hours=6)).isoformat(),
+            "places": {},
+            "runs": {
+                "台北": [{"at": (now - timedelta(hours=12)).isoformat(), "days": older}, {"at": (now - timedelta(hours=6)).isoformat(), "days": days}],
+                "高雄": [{"at": (now - timedelta(hours=6)).isoformat(), "days": days}],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            (Path(tmp) / "previous.json").write_text(json.dumps(previous), encoding="utf-8")
+            code = site.main(["台北", "--out", tmp, "--from-file", FIXTURE, "--previous", str(Path(tmp) / "previous.json")])
+            page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+            data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 0)
+        self.assertIn("<h2>預報趨勢</h2>", page)
+        self.assertIn("11/16 一:降雨機率提高 42 個百分點;降雨機率連續 2 次上修(10% → 30% → 72%)", page)
+        self.assertEqual(len(data["runs"]["台北"]), 3)  # 先前兩次加上這一次
+        self.assertNotIn("runs", data["places"]["台北"])
+        self.assertEqual(data["places"]["台北"]["comparison"]["trends"][0]["kind"], "rising")
+
+    def test_first_run_and_old_format_have_no_trend_but_do_not_fail(self):
+        from weekcast import site
+
+        self.assertEqual(site.load_previous(None), {})
+        self.assertEqual(site.load_previous(Path("/nonexistent.json")), {})
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            old = Path(tmp) / "old.json"
+            old.write_text("not json", encoding="utf-8")
+            self.assertEqual(site.load_previous(old), {})
+            # 舊版 data.json 沒有 runs:用它當時的逐日預報當作一筆紀錄
+            old.write_text(json.dumps({"generated": "2026-11-12T02:00:00+00:00", "places": {"台北": {"days": [
+                {"day": "2026-11-13", "tmax": {"p50": 28.0}, "tmin": {"p50": 21.0}, "pop": 0.05}]}}}), encoding="utf-8")
+            self.assertEqual(site.load_previous(old)["台北"][0]["days"]["2026-11-13"]["pop"], 0.05)
+            self.assertEqual(site.main(["台北", "--out", tmp, "--from-file", FIXTURE]), 0)
+            self.assertNotIn("預報趨勢", (Path(tmp) / "index.html").read_text(encoding="utf-8"))
 
     def test_text_is_escaped(self):
         from weekcast import site
@@ -575,45 +735,76 @@ class RateLimitTest(unittest.TestCase):
 
 class PeriodTest(unittest.TestCase):
     def raw(self, rain_by_step, members=2):
-        times = [f"2026-01-01T{h:02d}:00" for h in range(0, 24, 3)]
+        """一整天每 3 小時一筆,外加隔天 00:00(晚上時段的最後一筆雨量標示在那裡)。"""
+        times = [f"2026-01-01T{h:02d}:00" for h in range(0, 24, 3)] + ["2026-01-02T00:00"]
         hourly = {"time": times}
         for m in range(members):
             tag = "" if m == 0 else f"_member{m:02d}"
             hourly[f"precipitation{tag}_ncep_gefs025"] = list(rain_by_step)
-            hourly[f"temperature_2m{tag}_ncep_gefs025"] = [18, 17, 19, 23, 26, 27, 24, 21]
-            hourly[f"cloud_cover{tag}_ncep_gefs025"] = [20] * 8
+            hourly[f"temperature_2m{tag}_ncep_gefs025"] = [18, 17, 19, 23, 26, 27, 24, 21, 19]
+            hourly[f"cloud_cover{tag}_ncep_gefs025"] = [20] * 9
         return {"hourly": hourly}
 
     def test_rain_lands_in_the_right_part_of_the_day(self):
         from weekcast import periods
 
-        rows = {r.name: r for r in periods.period_forecast(self.raw([0, 0, 0, 0, 2, 3, 0, 0]))}
+        # 雨量是往前累積的:標示 15:00 的 2 mm 下在 12–15 時,標示 18:00 的 3 mm 下在 15–18 時
+        rows = {r.name: r for r in periods.period_forecast(self.raw([0, 0, 0, 0, 0, 2, 3, 0, 0]), 1)}
         self.assertEqual(list(rows), ["凌晨", "上午", "下午", "晚上"])
         self.assertEqual([rows[n].pop for n in rows], [0, 0, 1, 0])
         self.assertAlmostEqual(rows["下午"].precip.p50, 5)
-        self.assertAlmostEqual(rows["下午"].temp.p50, 26.5)
+        self.assertAlmostEqual(rows["下午"].temp.p50, 26.5)  # 氣溫是瞬間值,取 12 與 15 時
         self.assertAlmostEqual(rows["凌晨"].temp.p50, 17.5)
         self.assertEqual(rows["上午"].sky, "晴")
+
+    def test_rain_stamped_at_noon_fell_in_the_morning(self):
+        from weekcast import periods
+
+        rows = {r.name: r for r in periods.period_forecast(self.raw([9, 0, 0, 0, 4, 0, 0, 0, 6]), 1)}
+        # 標示 00:00 的 9 mm 是前一天晚上下的,不屬於今天;標示隔天 00:00 的 6 mm 屬於今天晚上
+        self.assertEqual([rows[n].precip.p50 for n in rows], [0, 4, 0, 6])
 
     def test_period_totals_add_up_to_the_day(self):
         from weekcast import periods
 
-        rows = periods.period_forecast(self.raw([0.4, 0.3, 0.1, 0.0, 0.1, 0.1, 0.1, 0.3]))
+        rows = periods.period_forecast(self.raw([5.0, 0.4, 0.3, 0.1, 0.0, 0.1, 0.1, 0.1, 0.3]), 1)
         self.assertAlmostEqual(sum(r.precip.p50 for r in rows), 1.4)
+
+    def test_period_without_its_last_step_has_no_rain_total(self):
+        from weekcast import periods
+
+        raw = self.raw([0, 0, 0, 0, 0, 0, 0, 3, 9])
+        for series in raw["hourly"].values():
+            series.pop()  # 資料只到 21:00,晚上時段缺最後 3 小時
+        evening = periods.period_forecast(raw)[-1]
+        self.assertEqual(evening.name, "晚上")
+        self.assertIsNone(evening.pop)
+        self.assertIsNone(evening.precip)
+        self.assertAlmostEqual(evening.temp.p50, 22.5)
+        self.assertEqual(report.period_rows([evening])[1][-1], "22°")
 
     def test_real_data_has_four_periods_for_each_of_seven_days(self):
         from weekcast import periods
 
         rows = periods.period_forecast(client.load_raw(FIXTURE)["periods"], 7)
         self.assertEqual(len(rows), 28)
+        # 存檔只到最後一天 21:00,所以最後一個晚上沒有完整的雨量
+        self.assertEqual([r.name for r in rows if r.pop is None], ["晚上"])
         for r in rows:
-            self.assertTrue(0 <= r.pop <= 1)
+            self.assertTrue(r.pop is None or 0 <= r.pop <= 1)
             self.assertTrue(r.temp.p10 <= r.temp.p50 <= r.temp.p90)
         afternoons = [r.temp.p50 for r in rows if r.name == "下午"]
         dawns = [r.temp.p50 for r in rows if r.name == "凌晨"]
         # 平常下午比凌晨暖;11/18 冷空氣南下,白天升不了溫,所以只檢查前六天
         self.assertTrue(all(a > d for a, d in zip(afternoons[:6], dawns[:6])))
         self.assertLess(afternoons[6] - dawns[6], 2)
+
+    def test_fetch_asks_for_one_extra_day(self):
+        from unittest import mock
+
+        with mock.patch.object(client, "_get_json", return_value={}) as get:
+            client.fetch_periods(25.0, 121.5, 7, "Asia/Taipei")
+        self.assertEqual(get.call_args.args[1]["forecast_days"], 8)
 
     def test_report_and_page_show_periods(self):
         from weekcast import site
