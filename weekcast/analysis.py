@@ -128,7 +128,7 @@ def pool(ens: Ensemble, section: str, var: str, index: int, offsets: dict[str, f
     """把各系集在某個時間點的成員合併成一個大系集。
 
     每套系集的總權重相同,避免成員多的系統(ECMWF 51 個)壓過成員少的
-    (GEPS 21 個)——模式之間的差異往往比同一模式內成員的差異更有資訊量。
+    (GEFS 31 個)——模式之間的差異往往比同一模式內成員的差異更有資訊量。
     回傳 (加權樣本, 各系統的成員值);給了 offsets 時會先扣掉各系統的偏差。
     """
     by_system: dict[str, list[float]] = {}

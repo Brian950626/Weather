@@ -80,8 +80,8 @@ class ParseTest(unittest.TestCase):
     def test_variables_a_model_does_not_provide_are_dropped(self):
         system = simple_system([[20], [22]], [[0], [5]])
         system["wind_gusts_10m_max"] = [[None], [None]]
-        ens = analysis.parse(make_raw(["2026-01-01"], {"icon_global_eps": system}))
-        self.assertNotIn("wind_gusts_10m_max", ens.daily["ICON"])
+        ens = analysis.parse(make_raw(["2026-01-01"], {"ecmwf_aifs025_ensemble": system}))
+        self.assertNotIn("wind_gusts_10m_max", ens.daily["AIFS"])
         self.assertIsNone(analysis.daily_forecast(ens)[0].gust)
 
     def test_api_error_is_reported(self):
@@ -183,9 +183,10 @@ class RealDataTest(unittest.TestCase):
         cls.ens = load_surface()
         cls.forecast = analysis.daily_forecast(cls.ens, 7)
 
-    def test_all_five_systems_and_members_present(self):
+    def test_three_systems_present_and_removed_models_ignored(self):
+        # 樣本檔裡還有 GEPS 與 ICON 的資料,已不採用,解析時應略過
         counts = {s: self.ens.member_count(s) for s in self.ens.systems}
-        self.assertEqual(counts, {"ECMWF": 51, "GEFS": 31, "GEPS": 21, "ICON": 40, "AIFS": 51})
+        self.assertEqual(counts, {"ECMWF": 51, "GEFS": 31, "AIFS": 51})
 
     def test_values_are_ordered_and_plausible(self):
         self.assertEqual(len(self.forecast), 7)
@@ -205,7 +206,7 @@ class RealDataTest(unittest.TestCase):
 
     def test_report_renders(self):
         text = report.render("台北", self.ens, self.forecast, analysis.signals(self.ens, 7))
-        self.assertIn("194 個系集成員", text)
+        self.assertIn("133 個系集成員", text)
         self.assertIn("11/18 三", text)
 
     def test_padding_counts_cjk_as_double_width(self):
@@ -570,6 +571,66 @@ class RateLimitTest(unittest.TestCase):
         result, calls, sleeps = self.run_get([(429, "Daily API request limit exceeded. Please try again tomorrow.")])
         self.assertIsInstance(result, client.FetchError)
         self.assertEqual((len(calls), sleeps), (1, []))
+
+
+class PeriodTest(unittest.TestCase):
+    def raw(self, rain_by_step, members=2):
+        times = [f"2026-01-01T{h:02d}:00" for h in range(0, 24, 3)]
+        hourly = {"time": times}
+        for m in range(members):
+            tag = "" if m == 0 else f"_member{m:02d}"
+            hourly[f"precipitation{tag}_ncep_gefs025"] = list(rain_by_step)
+            hourly[f"temperature_2m{tag}_ncep_gefs025"] = [18, 17, 19, 23, 26, 27, 24, 21]
+            hourly[f"cloud_cover{tag}_ncep_gefs025"] = [20] * 8
+        return {"hourly": hourly}
+
+    def test_rain_lands_in_the_right_part_of_the_day(self):
+        from weekcast import periods
+
+        rows = {r.name: r for r in periods.period_forecast(self.raw([0, 0, 0, 0, 2, 3, 0, 0]))}
+        self.assertEqual(list(rows), ["凌晨", "上午", "下午", "晚上"])
+        self.assertEqual([rows[n].pop for n in rows], [0, 0, 1, 0])
+        self.assertAlmostEqual(rows["下午"].precip.p50, 5)
+        self.assertAlmostEqual(rows["下午"].temp.p50, 26.5)
+        self.assertAlmostEqual(rows["凌晨"].temp.p50, 17.5)
+        self.assertEqual(rows["上午"].sky, "晴")
+
+    def test_period_totals_add_up_to_the_day(self):
+        from weekcast import periods
+
+        rows = periods.period_forecast(self.raw([0.4, 0.3, 0.1, 0.0, 0.1, 0.1, 0.1, 0.3]))
+        self.assertAlmostEqual(sum(r.precip.p50 for r in rows), 1.4)
+
+    def test_real_data_has_four_periods_for_each_of_seven_days(self):
+        from weekcast import periods
+
+        rows = periods.period_forecast(client.load_raw(FIXTURE)["periods"], 7)
+        self.assertEqual(len(rows), 28)
+        for r in rows:
+            self.assertTrue(0 <= r.pop <= 1)
+            self.assertTrue(r.temp.p10 <= r.temp.p50 <= r.temp.p90)
+        afternoons = [r.temp.p50 for r in rows if r.name == "下午"]
+        dawns = [r.temp.p50 for r in rows if r.name == "凌晨"]
+        # 平常下午比凌晨暖;11/18 冷空氣南下,白天升不了溫,所以只檢查前六天
+        self.assertTrue(all(a > d for a, d in zip(afternoons[:6], dawns[:6])))
+        self.assertLess(afternoons[6] - dawns[6], 2)
+
+    def test_report_and_page_show_periods(self):
+        from weekcast import site
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--from-file", FIXTURE])
+        self.assertIn("時段預報", out.getvalue())
+        self.assertIn("下午 12–18", out.getvalue())
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+            data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
+        self.assertEqual(page.count('class="cell"'), 28)
+        self.assertIn('id="radar"', page)
+        self.assertIn('data-lat="25.0"', page)
+        self.assertEqual(len(data["places"]["台北"]["periods"]), 28)
 
 
 if __name__ == "__main__":

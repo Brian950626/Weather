@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import analysis, client, report, upper
+from . import analysis, client, periods, report, upper
 
 DEFAULT_PLACES = ("台北", "台中", "高雄", "花蓮")
 REPO_URL = "https://github.com/Brian950626/Weather"
@@ -51,13 +51,22 @@ svg text{font:12px system-ui,sans-serif;fill:var(--muted)}
 svg .val{fill:var(--ink2)}svg .gridline{stroke:var(--grid)}svg .bar{fill:var(--series)}svg .range{fill:var(--series-soft)}
 svg g.hit:hover .bar{opacity:.8}
 #tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--page);padding:6px 10px;border-radius:6px;font-size:12px;white-space:pre;display:none;z-index:9}
+.grid td.cell{position:relative;min-width:120px}
+.grid td.cell b{font-size:15px}.grid td.cell span{color:var(--ink2);margin-left:6px}
+.grid td.cell i{position:absolute;left:0;bottom:0;height:3px;background:var(--series);border-radius:2px}
+#radar .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+#radar button{font:inherit;font-size:13px;padding:4px 12px;border:1px solid var(--axis);border-radius:999px;background:var(--surface);color:var(--ink);cursor:pointer}
+#radar button[aria-pressed=true]{background:var(--ink);color:var(--page);border-color:var(--ink)}
+#rtime{font-size:13px;color:var(--ink2);margin-left:auto}
+#map{height:440px;border-radius:8px;background:var(--grid)}
+#cwa{display:none;max-width:100%;border-radius:8px}
 footer{color:var(--ink2);font-size:12px;margin-top:32px}a{color:var(--series)}
 """
 
 JS = """
 const tabs=[...document.querySelectorAll('nav button')],secs=[...document.querySelectorAll('section.place')];
 function show(i){tabs.forEach((b,j)=>b.setAttribute('aria-selected',i===j));secs.forEach((s,j)=>s.classList.toggle('on',i===j));
-try{localStorage.setItem('place',i)}catch(e){}}
+try{localStorage.setItem('place',i)}catch(e){}if(window.radarMove)radarMove()}
 tabs.forEach((b,i)=>b.addEventListener('click',()=>show(i)));
 let start=0;try{start=+localStorage.getItem('place')||0}catch(e){}show(start<tabs.length?start:0);
 const tip=document.getElementById('tip');
@@ -163,7 +172,80 @@ def _upper_rows(rows) -> list[list[str]]:
     return out
 
 
-def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7) -> tuple[str, dict]:
+def _period_grid(rows) -> str:
+    """每天一列、四個時段各一格;底部的橫條長度是降雨機率。"""
+    head = "".join(f"<th>{name} {start:02d}–{end:02d}</th>" for name, start, end in periods.PERIODS)
+    body = []
+    for day, cells in periods.by_day(rows).items():
+        tds = [f"<td>{esc(report._label(day))}</td>"]
+        for name, _, _ in periods.PERIODS:
+            c = cells.get(name)
+            if c is None or c.temp is None or c.pop is None:
+                tds.append("<td>–</td>")
+                continue
+            tip = (
+                f"{report._label(day)} {name}\n氣溫 {c.temp.p50:.0f}°C(範圍 {c.temp.p10:.0f}–{c.temp.p90:.0f})\n"
+                f"降雨機率 {c.pop:.0%}\n雨量中位數 {c.precip.p50:.1f} mm,偏多時 {c.precip.p90:.1f} mm"
+            )
+            tds.append(
+                f'<td class="cell" data-tip="{esc(tip)}"><b>{c.temp.p50:.0f}°</b><span>{esc(c.sky)} {c.pop:.0%}</span>'
+                f'<i style="width:{c.pop * 100:.0f}%"></i></td>'
+            )
+        body.append("<tr>" + "".join(tds) + "</tr>")
+    return f'<div class="scroll"><table class="grid"><thead><tr><th>日期</th>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
+RADAR_HTML = """<section id="radar"><h2>即時雷達回波</h2><div class="card">
+<div class="bar"><button data-src="rv" aria-pressed="true">全球合成</button><button data-src="jma">日本氣象廳</button>
+<button data-src="cwa">中央氣象署</button><button id="rplay">暫停</button><span id="rtime"></span></div>
+<div id="map"></div><img id="cwa" alt="中央氣象署雷達合成回波圖">
+<p class="sub" id="rnote">最近約 2 小時的回波動畫,每 5 分鐘自動更新。雷達只能看出現在雨在哪裡、往哪裡移動,適合判斷未來 1–3 小時;更久之後請看上面的預報。</p>
+<p class="sub">來源:全球合成為 <a href="https://www.rainviewer.com/">RainViewer</a>(彙整各國氣象單位的雷達);
+<a href="https://www.jma.go.jp/bosai/nowc/">日本氣象廳</a>降水即時預報(涵蓋日本周邊,台灣只到東北部外海);
+<a href="https://www.cwa.gov.tw/V8/C/W/OBS_Radar.html">中央氣象署</a>雷達合成回波圖。底圖 © OpenStreetMap。</p></div></section>"""
+
+RADAR_JS = """
+(function(){
+const el=document.getElementById('map'),img=document.getElementById('cwa'),label=document.getElementById('rtime'),
+note=document.getElementById('rnote'),play=document.getElementById('rplay');
+if(!el)return;
+if(!window.L){el.textContent='地圖元件載入失敗';return}
+const here=()=>{const s=document.querySelector('section.place.on');return [+s.dataset.lat,+s.dataset.lon]};
+const map=L.map(el,{scrollWheelZoom:false}).setView(here(),7);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:10,attribution:'&copy; OpenStreetMap'}).addTo(map);
+const pin=L.circleMarker(here(),{radius:6,weight:2,color:'#0b0b0b',fillColor:'#fff',fillOpacity:1}).addTo(map);
+window.radarMove=()=>{map.setView(here(),map.getZoom());pin.setLatLng(here())};
+let src='rv',frames=[],layers=[],at=0,running=true,timer=null;
+const sources={
+ rv:async()=>{const d=await(await fetch('https://api.rainviewer.com/public/weather-maps.json')).json();
+  return d.radar.past.map(f=>({t:f.time*1000,url:d.host+f.path+'/256/{z}/{x}/{y}/2/1_1.png',opt:{maxNativeZoom:7}}))},
+ jma:async()=>{const d=await(await fetch('https://www.jma.go.jp/bosai/jmatile/data/nowc/targetTimes_N1.json')).json();
+  const ts=s=>Date.UTC(+s.slice(0,4),+s.slice(4,6)-1,+s.slice(6,8),+s.slice(8,10),+s.slice(10,12));
+  return d.filter((f,i)=>i%2===0).slice(0,13).reverse().map(f=>({t:ts(f.validtime),
+   url:'https://www.jma.go.jp/bosai/jmatile/data/nowc/'+f.basetime+'/none/'+f.validtime+'/surf/hrpns/{z}/{x}/{y}.png',
+   opt:{minNativeZoom:4,maxNativeZoom:10}}))}};
+function draw(){layers.forEach((l,i)=>l.setOpacity(i===at?0.7:0));
+ if(frames[at])label.textContent=new Date(frames[at].t).toLocaleString([], {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}
+function tick(){if(!frames.length)return;at=(at+1)%frames.length;draw();
+ timer=setTimeout(tick,at===frames.length-1?1800:450)}
+function stop(){clearTimeout(timer);timer=null}
+async function load(){stop();layers.forEach(l=>map.removeLayer(l));layers=[];frames=[];
+ if(src==='cwa'){el.style.display='none';img.style.display='block';play.style.display='none';
+  img.src='https://www.cwa.gov.tw/Data/radar/CV1_3600.png?t='+Math.floor(Date.now()/3e5);label.textContent='';return}
+ el.style.display='';img.style.display='none';play.style.display='';map.invalidateSize();
+ try{frames=await sources[src]()}catch(e){label.textContent='雷達資料暫時無法取得';return}
+ layers=frames.map(f=>L.tileLayer(f.url,Object.assign({opacity:0,maxZoom:10,zIndex:5},f.opt)).addTo(map));
+ at=frames.length-1;draw();if(running)timer=setTimeout(tick,1800)}
+img.onerror=()=>{img.style.display='none';label.textContent='無法直接載入中央氣象署的圖,請點下方連結到官網查看'};
+document.querySelectorAll('#radar button[data-src]').forEach(b=>b.addEventListener('click',()=>{src=b.dataset.src;
+ document.querySelectorAll('#radar button[data-src]').forEach(x=>x.setAttribute('aria-pressed',x===b));load()}));
+play.addEventListener('click',()=>{running=!running;play.textContent=running?'暫停':'播放';stop();if(running)tick()});
+load();setInterval(load,3e5);
+})();
+"""
+
+
+def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7, period_raw: dict | None = None) -> tuple[str, dict]:
     """由原始資料產生一個地點的 HTML 區塊與 JSON 資料。"""
     ens = analysis.parse(raw)
     forecast = analysis.daily_forecast(ens, days)
@@ -176,6 +258,12 @@ def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7) -> 
             upper_days = upper.analyse(upper_raw, ens.meta.get("latitude") or 0.0, days)
         except (KeyError, IndexError, TypeError, ValueError):
             upper_days = None
+    period_list = None
+    if period_raw:
+        try:
+            period_list = periods.period_forecast(period_raw, days)
+        except (KeyError, IndexError, TypeError, ValueError):
+            period_list = None
     lat, lon = ens.meta.get("latitude") or 0.0, ens.meta.get("longitude") or 0.0
     counts = " + ".join(f"{s} {ens.member_count(s)}" for s in ens.systems)
     cards = "".join(
@@ -188,6 +276,12 @@ def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7) -> 
         f'<p class="sub">{abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"} · '
         f"{esc(counts)} = {sum(ens.member_count(s) for s in ens.systems)} 個系集成員</p>",
         f'<div class="days">{cards}</div>',
+        (
+            '<h2>時段預報</h2><div class="card"><p class="sub">每格是該時段的氣溫、天氣與 6 小時內降雨機率,'
+            "底部橫條越長降雨機率越高;越後面的日子,時段的可信度越低</p>" + _period_grid(period_list) + "</div>"
+        )
+        if period_list
+        else "",
         "<h2>重點</h2>" + _list(report.highlights(forecast)),
         '<h2>氣溫</h2><div class="card"><p class="sub">深色:低溫到高溫的中位數;淺色:10–90% 的可能範圍(°C)</p>'
         + _temperature_chart(forecast) + "</div>",
@@ -208,23 +302,34 @@ def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7) -> 
     notes = report.uncertainty(forecast)
     if notes:
         parts.append("<h2>不確定性</h2>" + _list(notes))
-    return "".join(parts), report.to_json(name, ens, forecast, signal_list, None, upper_days)
+    data = report.to_json(name, ens, forecast, signal_list, None, upper_days, period_list)
+    return "".join(parts), data
 
 
-def build_page(sections: list[tuple[str, str]], generated: datetime, failed: list[str]) -> str:
+def build_page(sections: list[tuple], generated: datetime, failed: list[str]) -> str:
+    """sections 的每一項是 (地名, HTML 區塊) 或 (地名, HTML 區塊, 緯度, 經度);有座標才會附雷達圖。"""
+    sections = [(s[0], s[1], *(s[2:4] if len(s) >= 4 else (None, None))) for s in sections]
+    radar = all(lat is not None for _, _, lat, _ in sections)
     stamp = generated.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    tabs = "".join(f'<button role="tab">{esc(name)}</button>' for name, _ in sections)
-    body = "".join(f'<section class="place"><h1>{esc(name)} 一週天氣預報</h1>{block}</section>' for name, block in sections)
+    tabs = "".join(f'<button role="tab">{esc(s[0])}</button>' for s in sections)
+    body = "".join(
+        f'<section class="place"' + (f' data-lat="{lat}" data-lon="{lon}"' if radar else "") + f"><h1>{esc(name)} 一週天氣預報</h1>{block}</section>"
+        for name, block, lat, lon in sections
+    )
+    leaflet = "https://unpkg.com/leaflet@1.9.4/dist/leaflet"
     missing = f'<p class="sub">本次未能更新:{esc("、".join(failed))}</p>' if failed else ""
     return (
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'
-        f"<style>{CSS}</style></head><body><main>"
-        f'<nav role="tablist">{tabs}</nav>{body}{missing}'
-        f'<footer>更新時間 {stamp} · 資料:Open-Meteo Ensemble API(ECMWF、GEFS、GEPS、ICON、AIFS)· '
+        + (f'<link rel="stylesheet" href="{leaflet}.css">' if radar else "")
+        + f"<style>{CSS}</style></head><body><main>"
+        f'<nav role="tablist">{tabs}</nav>{body}{RADAR_HTML if radar else ""}{missing}'
+        f'<footer>更新時間 {stamp} · 資料:Open-Meteo Ensemble API(ECMWF、GEFS、AIFS)· '
         "數值為系集中位數;信心與高空研判是經驗法則,不是官方預報,颱風與災害天氣請以中央氣象署為準 · "
         f'<a href="data.json">data.json</a> · <a href="{REPO_URL}">原始碼與說明</a></footer>'
-        f'</main><div id="tip"></div><script>{JS}</script></body></html>'
+        '</main><div id="tip"></div>'
+        + (f'<script src="{leaflet}.js"></script>' if radar else "")
+        + f"<script>{JS}{RADAR_JS if radar else ''}</script></body></html>"
     )
 
 
@@ -240,7 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in args.places[:1] if args.from_file else args.places:
         try:
             if args.from_file:
-                raw, upper_raw = client.split_bundle(client.load_raw(args.from_file))
+                bundle = client.load_raw(args.from_file)
+                raw, upper_raw = client.split_bundle(bundle)
+                period_raw = bundle.get("periods")
             else:
                 place = client.geocode(name)
                 raw = client.fetch_ensemble(place.latitude, place.longitude, args.days)
@@ -249,12 +356,17 @@ def main(argv: list[str] | None = None) -> int:
                 except client.FetchError as err:
                     print(f"{name}:沒有高空資料({err})", file=sys.stderr)
                     upper_raw = None
-            block, payload = build_place(name, raw, upper_raw, args.days)
+                try:
+                    period_raw = client.fetch_periods(place.latitude, place.longitude, args.days, raw.get("timezone") or "GMT")
+                except client.FetchError as err:
+                    print(f"{name}:沒有時段資料({err})", file=sys.stderr)
+                    period_raw = None
+            block, payload = build_place(name, raw, upper_raw, args.days, period_raw)
         except (client.FetchError, ValueError, OSError) as err:
             print(f"{name}:略過({err})", file=sys.stderr)
             failed.append(name)
             continue
-        sections.append((name, block))
+        sections.append((name, block, payload["location"].get("latitude") or 0.0, payload["location"].get("longitude") or 0.0))
         data[name] = payload
     if not sections:
         print("沒有任何地點成功,不產生網頁", file=sys.stderr)
