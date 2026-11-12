@@ -75,3 +75,6 @@ CROSS_VARS = (
 )
 WE_OFFSETS = tuple(range(-40, 41, 5))  # 經度偏移(度)
 NS_OFFSETS = tuple(o for o in range(-20, 21, 5) if o)  # 緯度偏移(度),不含測站本身
+
+# --- 時段預報(每 3 小時一筆的地面資料)---------------------------------------
+PERIOD_VARS = ("temperature_2m", "precipitation", "cloud_cover")

@@ -8,6 +8,7 @@ from datetime import date
 
 from .analysis import DayForecast, Ensemble, Signal
 from .history import Comparison
+from .periods import PERIODS, PeriodForecast, by_day
 from .upper import UpperDay, compass, trough_passage
 
 
@@ -131,6 +132,28 @@ def uncertainty(forecast: list[DayForecast]) -> list[str]:
     return out
 
 
+def period_rows(rows: list[PeriodForecast]) -> list[list[str]]:
+    """每天一列、四個時段各一格:「氣溫 降雨機率」。"""
+    table = [["日期", *(f"{name} {start:02d}–{end:02d}" for name, start, end in PERIODS)]]
+    for day, cells in by_day(rows).items():
+        line = [_label(day)]
+        for name, _, _ in PERIODS:
+            cell = cells.get(name)
+            if cell is None or cell.temp is None or cell.pop is None:
+                line.append("–")
+            else:
+                line.append(f"{cell.temp.p50:.0f}° {cell.sky} {cell.pop:.0%}")
+        table.append(line)
+    return table
+
+
+def _grid(table: list[list[str]]) -> list[str]:
+    widths = [max(_width(row[i]) for row in table) for i in range(len(table[0]))]
+    lines = ["  ".join(_pad(cell, widths[i]) for i, cell in enumerate(row)).rstrip() for row in table]
+    lines.insert(1, "  ".join("─" * w for w in widths))
+    return lines
+
+
 def _signed(value: float | None, digits: int = 1) -> str:
     return "–" if value is None else f"{value:+.{digits}f}"
 
@@ -242,6 +265,7 @@ def render(
     signal_list: list[Signal],
     comparison: Comparison | None = None,
     upper_days: list[UpperDay] | None = None,
+    period_list: list[PeriodForecast] | None = None,
 ) -> str:
     meta = ens.meta
     lat, lon = meta.get("latitude") or 0.0, meta.get("longitude") or 0.0
@@ -254,10 +278,10 @@ def render(
         f"資料:{counts} = {total} 個系集成員",
         "",
         *_table(forecast),
-        "",
-        "重點",
-        *(f"• {line}" for line in highlights(forecast)),
     ]
+    if period_list:
+        lines += ["", "時段預報(氣溫、天氣、6 小時內降雨機率)", *_grid(period_rows(period_list))]
+    lines += ["", "重點", *(f"• {line}" for line in highlights(forecast))]
     if signal_list:
         lines += ["", "天氣型態(氣壓與高空場)"]
         by_day: dict[str, list[str]] = {}
@@ -305,12 +329,13 @@ def render(
     return "\n".join(lines)
 
 
-def to_json(place_name, ens, forecast, signal_list, comparison=None, upper_days=None) -> dict:
+def to_json(place_name, ens, forecast, signal_list, comparison=None, upper_days=None, period_list=None) -> dict:
     return {
         "place": place_name,
         "location": ens.meta,
         "systems": {name: ens.member_count(name) for name in ens.systems},
         "days": [asdict(fc) | {"weekday": fc.weekday} for fc in forecast],
+        "periods": [asdict(p) for p in period_list or []],
         "signals": [asdict(s) for s in signal_list],
         "highlights": highlights(forecast),
         "uncertainty": uncertainty(forecast),

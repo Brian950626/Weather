@@ -18,6 +18,7 @@ from .systems import (
     DAILY_VARS,
     HOURLY_VARS,
     NS_OFFSETS,
+    PERIOD_VARS,
     PROFILE_VARS,
     SYSTEMS,
     UPPER_SYSTEM_IDS,
@@ -194,6 +195,23 @@ def fetch_upper(latitude: float, longitude: float, days: int = 7, timezone: str 
     if not isinstance(data, list) or len(data) != len(points):
         raise FetchError("十字剖面的回應格式不符預期")
     return {"profile": profile, "cross": {"points": points, "data": data}}
+
+
+def fetch_periods(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
+    """取得時段預報所需的資料:每 3 小時一筆的氣溫、雨量、雲量(所有成員)。"""
+    return _get_json(
+        ENSEMBLE_URL,
+        {
+            "latitude": f"{latitude:.4f}",
+            "longitude": f"{longitude:.4f}",
+            "hourly": ",".join(PERIOD_VARS),
+            "models": ",".join(s.api_id for s in SYSTEMS),
+            "timezone": timezone,
+            "forecast_days": days,
+            "temporal_resolution": "hourly_3",
+        },
+        timeout=90,
+    )
 
 
 def split_bundle(raw: dict) -> tuple[dict, dict | None]:

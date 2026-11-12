@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import analysis, client, history, report, upper
+from . import analysis, client, history, periods, report, upper
 from .systems import SYSTEMS
 
 
@@ -41,9 +41,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        upper_raw = None
+        upper_raw = period_raw = None
         if args.from_file:
-            raw, upper_raw = client.split_bundle(client.load_raw(args.from_file))
+            bundle = client.load_raw(args.from_file)
+            raw, upper_raw = client.split_bundle(bundle)
+            period_raw = bundle.get("periods")
             name = args.place
         else:
             if args.lat is not None:
@@ -59,8 +61,12 @@ def main(argv: list[str] | None = None) -> int:
                     upper_raw = client.fetch_upper(place.latitude, place.longitude, args.days, zone)
                 except client.FetchError as err:  # 高空資料抓不到時,仍然給出地面預報
                     print(f"(無法取得高空資料,略過高空分析:{err})", file=sys.stderr)
+            try:
+                period_raw = client.fetch_periods(place.latitude, place.longitude, args.days, raw.get("timezone") or "GMT")
+            except client.FetchError as err:
+                print(f"(無法取得時段資料,略過時段預報:{err})", file=sys.stderr)
             if args.save_raw:
-                client.save_raw({"surface": raw, "upper": upper_raw}, args.save_raw)
+                client.save_raw({"surface": raw, "upper": upper_raw, "periods": period_raw}, args.save_raw)
         ens = analysis.parse(raw)
     except (client.FetchError, ValueError, OSError) as err:
         print(f"無法取得預報:{err}", file=sys.stderr)
@@ -78,6 +84,13 @@ def main(argv: list[str] | None = None) -> int:
         except (KeyError, IndexError, TypeError, ValueError) as err:
             print(f"(高空資料格式不符,略過高空分析:{err})", file=sys.stderr)
 
+    period_list = None
+    if period_raw:
+        try:
+            period_list = periods.period_forecast(period_raw, args.days)
+        except (KeyError, IndexError, TypeError, ValueError) as err:
+            print(f"(時段資料格式不符,略過時段預報:{err})", file=sys.stderr)
+
     comparison = None
     if not args.no_history and not args.from_file:
         directory = args.history_dir or history.default_dir()
@@ -89,9 +102,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"(無法讀寫預報紀錄:{err})", file=sys.stderr)
 
     if args.json:
-        print(json.dumps(report.to_json(name, ens, forecast, signal_list, comparison, upper_days), ensure_ascii=False, indent=2))
+        print(json.dumps(report.to_json(name, ens, forecast, signal_list, comparison, upper_days, period_list), ensure_ascii=False, indent=2))
     else:
-        print(report.render(name, ens, forecast, signal_list, comparison, upper_days))
+        print(report.render(name, ens, forecast, signal_list, comparison, upper_days, period_list))
     return 0
 
 
