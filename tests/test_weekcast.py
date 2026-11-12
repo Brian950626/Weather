@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from weekcast import analysis, client, history, report, upper
+from weekcast import analysis, briefing, client, history, report, upper, verify
 from weekcast.__main__ import main
 
 FIXTURE = str(Path(__file__).parent / "data" / "taipei_20261112.json.gz")
@@ -207,12 +207,181 @@ class RealDataTest(unittest.TestCase):
     def test_report_renders(self):
         text = report.render("台北", self.ens, self.forecast, analysis.signals(self.ens, 7))
         self.assertIn("133 個系集成員", text)
-        self.assertIn("11/18 三", text)
+        self.assertIn("11/18(三)", text)
 
     def test_padding_counts_cjk_as_double_width(self):
-        self.assertEqual(report._width("11/12 四"), 8)
+        self.assertEqual(report._width("11/12(四)"), 9)
         self.assertEqual(report._width(report._pad("台北", 7)), 7)
         self.assertEqual(report._pad("5", 3, right=True), "  5")
+
+
+class BriefingTest(unittest.TestCase):
+    """把預報整理成報告的骨架:時段、主要影響系統、模式比較、情境、注意事項。"""
+
+    @classmethod
+    def setUpClass(cls):
+        ens = load_surface()
+        cls.forecast = analysis.daily_forecast(ens, 7)
+        cls.upper = upper.analyse(load_upper(), 25.0, 7)
+        cls.brief = briefing.build(cls.forecast, analysis.signals(ens, 7), analysis.patterns(ens), cls.upper, 25.0, 121.5)
+
+    def test_each_day_gets_a_controlling_system(self):
+        self.assertEqual(
+            [(r.kind, r.system) for r in self.brief.roles],
+            [("ridge", "副熱帶高壓籠罩"), ("ridge", "副熱帶高壓籠罩"), ("trough", "高空槽接近"), ("front", "鋒面通過"),
+             ("cold", "東北季風影響"), ("warm", "偏南風回暖"), ("front", "鋒面通過、東北季風增強")],
+        )
+
+    def test_week_is_split_into_at_most_three_stages(self):
+        stages = self.brief.stages
+        self.assertEqual([len(s.days) for s in stages], [2, 3, 2])
+        self.assertEqual([s.stable for s in stages], [True, False, False])
+        self.assertEqual(stages[1].headline, "高空槽接近 → 鋒面通過 → 東北季風影響")
+        self.assertEqual(stages[2].headline, "偏南風回暖 → 鋒面通過、東北季風增強")  # 太短的兩段併在一起
+        self.assertEqual(stages[0].confidence_label, "高")
+        self.assertIn("11/14(六)", stages[1].reasons[0])  # 理由取該時段最沒把握的一天
+        self.assertEqual([level for level, _ in stages[1].rationale], ["500 hPa", "850 / 925 hPa", "250 hPa", "水氣與不穩定"])
+        self.assertIn("低層鋒面通過", stages[1].rationale[1][1])
+        self.assertIn("天氣穩定", stages[0].coupling)
+        self.assertIn("配合", stages[2].coupling)
+
+    def test_lede_says_when_it_changes_and_what_to_watch(self):
+        self.assertIn("分成 3 段", self.brief.lede)
+        self.assertIn("11/14(六)、11/17(二) 轉變", self.brief.lede)
+        self.assertIn("11/18(三) 的降溫", self.brief.lede)
+        self.assertIn("最沒把握的是 11/14(六)", self.brief.lede)
+
+    def test_southern_hemisphere_and_other_regions_do_not_get_a_monsoon(self):
+        ens = load_surface()
+        roles = briefing.day_roles(self.forecast, analysis.signals(ens, 7), self.upper, 25.0, -80.0)
+        self.assertEqual(roles[4].system, "鋒後冷空氣影響")
+        self.assertEqual(roles[6].system, "鋒面通過、冷空氣南下")
+
+    def test_without_upper_air_data_the_surface_signals_still_give_stages(self):
+        ens = load_surface()
+        brief = briefing.build(self.forecast, analysis.signals(ens, 7), analysis.patterns(ens), None, 25.0, 121.5)
+        self.assertTrue(1 <= len(brief.stages) <= 3)
+        self.assertEqual([level for level, _, _ in brief.current], ["地面"])
+        self.assertEqual(brief.stages[0].rationale, [])
+
+    def test_current_analysis_goes_from_the_surface_up(self):
+        levels = [level for level, _, _ in self.brief.current]
+        self.assertEqual(levels, ["地面", "925 hPa", "850 hPa", "700 hPa", "500 hPa", "250 hPa", "整層"])
+        meaning = dict((level, text) for level, _, text in self.brief.current)
+        self.assertIn("588 線", meaning["500 hPa"])
+        self.assertIn("暖平流", meaning["850 hPa"])
+
+    def test_model_comparison_names_the_odd_one_out(self):
+        rows = {m.day: m for m in self.brief.models}
+        self.assertIn("GEFS 偏乾", rows["2026-11-14"].verdict)
+        self.assertIn("ECMWF 偏乾", rows["2026-11-16"].verdict)
+        self.assertTrue(rows["2026-11-16"].split)
+        self.assertEqual(rows["2026-11-18"].verdict, "各模式一致。")
+        tmax, pop, rain = rows["2026-11-15"].systems["ECMWF"]
+        self.assertGreater(pop, 0.9)
+        self.assertGreater(rain, 5)
+
+    def test_scenarios_cover_the_least_certain_days(self):
+        days = {s.day for s in self.brief.scenarios}
+        self.assertIn("2026-11-14", days)
+        self.assertLessEqual(len(days), 3)
+        for day in days:
+            pair = [s for s in self.brief.scenarios if s.day == day]
+            self.assertEqual([s.name for s in pair], ["A", "B"])
+            self.assertAlmostEqual(pair[0].share + pair[1].share, 1, places=6)
+            self.assertGreaterEqual(pair[0].share, pair[1].share)  # A 是主要情境
+        self.assertEqual([briefing.likelihood(x) for x in (0.9, 0.7, 0.5, 0.3, 0.1)], ["高", "中高", "中", "中低", "低"])
+
+    def test_hazards_and_watch_points(self):
+        names = [name for name, _, _ in self.brief.hazards]
+        self.assertIn("降溫", names)
+        when = dict((name, when) for name, when, _ in self.brief.hazards)["降溫"]
+        self.assertEqual(when, "11/18(三)")
+        text = "\n".join(self.brief.watch)
+        self.assertIn("槽線", text)
+        self.assertIn("低層鋒面", text)
+        self.assertIn("各模式的降雨機率差很多", text)
+
+    def test_confidence_has_five_levels_with_reasons(self):
+        self.assertEqual([analysis.confidence_label(s) for s in (90, 70, 55, 40, 10)], ["高", "中高", "中", "中低", "低"])
+        shaky = self.forecast[2]  # 11/14
+        reasons = "、".join(analysis.confidence_reasons(shaky))
+        self.assertIn("各模式降雨機率相差", reasons)
+        self.assertIn("下不下雨不明確", reasons)
+        self.assertEqual(analysis.confidence_reasons(self.forecast[1]), ["成員集中、各模式一致"])
+
+    def test_quartiles_sit_inside_the_ten_ninety_range(self):
+        for fc in self.forecast:
+            self.assertTrue(fc.tmax.p10 <= fc.tmax.p25 <= fc.tmax.p50 <= fc.tmax.p75 <= fc.tmax.p90)
+
+    def test_outline_takes_the_majority_view_across_places(self):
+        role = lambda day, kind, system: {"day": day, "kind": kind, "system": system}
+        north = [role("2026-01-01", "ridge", "高壓脊籠罩"), role("2026-01-02", "front", "鋒面通過"), role("2026-01-03", "cold", "東北季風影響")]
+        south = [role("2026-01-01", "ridge", "高壓脊籠罩"), role("2026-01-02", "quiet", "天氣穩定"), role("2026-01-03", "cold", "東北季風影響")]
+        stages = briefing.outline([north, north, south])
+        self.assertEqual([s["days"] for s in stages], [["2026-01-01"], ["2026-01-02", "2026-01-03"]])
+        self.assertEqual(stages[1]["headline"], "鋒面通過 → 東北季風影響")
+        self.assertEqual(briefing.outline([]), [])
+
+
+class VerifyTest(unittest.TestCase):
+    def runs(self):
+        day = lambda tmax, tmin, pop: {"tmax": tmax, "tmin": tmin, "pop": pop}
+        return [
+            # 1/1 做的預報:1/2 是 1 天前,1/4 是 3 天前
+            {"at": "2026-01-01T01:00:00+00:00", "days": {"2026-01-01": day(20, 12, 0.1), "2026-01-02": day(21, 13, 0.7), "2026-01-04": day(18, 10, 0.2)}},
+            # 1/3 做了兩次,同一個時效只取較晚的一次
+            {"at": "2026-01-03T01:00:00+00:00", "days": {"2026-01-03": day(19, 11, 0.5), "2026-01-04": day(17, 9, 0.9)}},
+            {"at": "2026-01-03T07:00:00+00:00", "days": {"2026-01-03": day(19, 11, 0.5), "2026-01-04": day(16, 9, 0.3)}},
+        ]
+
+    def test_errors_are_forecast_minus_observed_and_rain_is_a_contingency(self):
+        observed = {"2026-01-02": {"tmax": 20.0, "tmin": 14.0, "rain": 0.0}, "2026-01-04": {"tmax": 15.0, "tmin": 9.0, "rain": 6.0}}
+        result = verify.verify(self.runs(), observed)
+        day2 = result.at("2026-01-02", 1)
+        self.assertAlmostEqual(day2.tmax_error, 1.0)  # 預報 21、實際 20:偏暖 1 度
+        self.assertAlmostEqual(day2.tmin_error, -1.0)
+        self.assertEqual(day2.rain, "空報")  # 報 70% 卻沒下
+        self.assertEqual(result.at("2026-01-04", 3).rain, "漏報")  # 3 天前只報 20%,結果下了 6 mm
+        latest = result.at("2026-01-04", 1)
+        self.assertEqual((latest.tmax, latest.rain), (16, "漏報"))  # 取 07 時那一次(30%)
+        self.assertIsNone(result.at("2026-01-03", 0))  # 當天的預報不算
+        one_day = next(s for s in result.scores if s.lead == 1)
+        self.assertEqual((one_day.count, one_day.hits, one_day.misses, one_day.false_alarms), (2, 0, 1, 1))
+        self.assertAlmostEqual(one_day.tmax_bias, 1.0)
+        self.assertAlmostEqual(one_day.tmax_mae, 1.0)
+
+    def test_observed_keeps_only_complete_past_days(self):
+        raw = {"daily": {"time": ["2026-01-01", "2026-01-02", "2026-01-03"], "temperature_2m_max": [20, None, 22],
+                         "temperature_2m_min": [10, 11, 12], "precipitation_sum": [0, 1, 2]}}
+        self.assertEqual(list(verify.parse_observed(raw, "2026-01-03")), ["2026-01-01"])
+        self.assertIsNone(verify.verify(self.runs(), {}))
+        self.assertIsNone(verify.verify([], {"2026-01-02": {"tmax": 20.0, "tmin": 14.0, "rain": 0.0}}))
+
+    def test_page_shows_verification_when_history_and_observations_exist(self):
+        from weekcast import site
+
+        bundle = client.load_raw(FIXTURE)
+        now = datetime(2026, 11, 12, 9, tzinfo=timezone.utc)
+        value = {"tmax": 27.0, "tmin": 20.0, "pop": 0.6}
+        runs = [{"at": "2026-11-10T01:00:00+00:00", "days": {"2026-11-10": value, "2026-11-11": value, "2026-11-12": value}}]
+        observed = {"daily": {"time": ["2026-11-10", "2026-11-11", "2026-11-12"], "temperature_2m_max": [26.0, 28.5, 27.0],
+                              "temperature_2m_min": [20.0, 21.0, 19.0], "precipitation_sum": [0.0, 3.0, 0.0]}}
+        block, data = site.build_place("台北", bundle["surface"], bundle["upper"], 7, bundle["periods"], runs, now, observed)
+        self.assertIn("過去幾天報得準不準", block)
+        self.assertIn('<span class="verdict-ok">有對</span>', block)
+        self.assertIn("高溫 -1.5", block)  # 預報 27、實際 28.5
+        self.assertEqual(data["verification"]["checks"][0]["day"], "2026-11-11")
+        self.assertEqual(len(data["runs"]), 2)
+
+    def test_observed_request_asks_for_past_days_in_local_time(self):
+        from unittest import mock
+
+        with mock.patch.object(client, "_get_json", return_value={}) as get:
+            client.fetch_observed(25.0, 121.5, "Asia/Taipei")
+        url, params = get.call_args.args[:2]
+        self.assertEqual(url, client.FORECAST_URL)
+        self.assertEqual((params["timezone"], params["past_days"]), ("Asia/Taipei", 8))
 
 
 class HistoryTest(unittest.TestCase):
@@ -594,7 +763,7 @@ class RealUpperDataTest(unittest.TestCase):
         self.assertEqual(day.outlook, "shallow")
         forecast = analysis.daily_forecast(load_surface(), 7)
         text = "\n".join(report.upper_impact(list(self.rows.values()), forecast))
-        self.assertIn("11/15 日", text)
+        self.assertIn("11/15(日)", text)
         self.assertIn("雨量不大", text)
 
     def test_low_level_fronts_are_found_on_the_days_the_wind_turns(self):
@@ -631,11 +800,20 @@ class SiteTest(unittest.TestCase):
             self.assertEqual(site.main(["台北", "--out", tmp, "--from-file", FIXTURE]), 0)
             page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
             data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
-        self.assertIn("台北 一週天氣預報", page)
-        self.assertIn("高空分析", page)
-        self.assertEqual(page.count('class="day"'), 7)
+        self.assertIn('<article class="place" data-name="台北"', page)
+        self.assertIn("逐日高空分析", page)
+        self.assertEqual(page.count('class="d d'), 7)  # 時間軸每天一欄
         self.assertEqual(page.count("<svg"), 2)
         self.assertEqual(len(data["places"]["台北"]["days"]), 7)
+        # 四個頁面都在同一個檔案裡,用網址切換;地點頁有六個分頁
+        for name in ("overview", "place", "radar", "about"):
+            self.assertEqual(page.count(f'<section class="page{" on" if name == "overview" else ""}" data-page="{name}"'), 1)
+        self.assertEqual(page.count('<section class="view"'), 6)
+        self.assertIn('<a href="#/place/0/summary">台北</a>', page)  # 總覽的表格連到地點頁
+        self.assertIn("逐日分區預報", page)
+        self.assertEqual(len(data["places"]["台北"]["briefing"]["stages"]), 3)
+        self.assertIsNone(data["places"]["台北"]["verification"])
+        self.assertIn("還沒有可以校驗的紀錄", page)
 
     def test_trend_section_uses_the_previously_published_data(self):
         from weekcast import site
@@ -657,8 +835,8 @@ class SiteTest(unittest.TestCase):
             page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
             data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
         self.assertEqual(code, 0)
-        self.assertIn("<h2>預報趨勢</h2>", page)
-        self.assertIn("11/16 一:降雨機率提高 42 個百分點;降雨機率連續 2 次上修(10% → 30% → 72%)", page)
+        self.assertIn("<h2>預報趨勢:和前幾次比</h2>", page)
+        self.assertIn("11/16(一):降雨機率提高 42 個百分點;降雨機率連續 2 次上修(10% → 30% → 72%)", page)
         self.assertEqual(len(data["runs"]["台北"]), 3)  # 先前兩次加上這一次
         self.assertNotIn("runs", data["places"]["台北"])
         self.assertEqual(data["places"]["台北"]["comparison"]["trends"][0]["kind"], "rising")
@@ -677,7 +855,7 @@ class SiteTest(unittest.TestCase):
                 {"day": "2026-11-13", "tmax": {"p50": 28.0}, "tmin": {"p50": 21.0}, "pop": 0.05}]}}}), encoding="utf-8")
             self.assertEqual(site.load_previous(old)["台北"][0]["days"]["2026-11-13"]["pop"], 0.05)
             self.assertEqual(site.main(["台北", "--out", tmp, "--from-file", FIXTURE]), 0)
-            self.assertNotIn("預報趨勢", (Path(tmp) / "index.html").read_text(encoding="utf-8"))
+            self.assertIn("還沒有 5 小時以前的預報可以比較", (Path(tmp) / "index.html").read_text(encoding="utf-8"))
 
     def test_text_is_escaped(self):
         from weekcast import site
@@ -859,16 +1037,20 @@ class BrowserSearchTest(unittest.TestCase):
     def test_same_sections_as_the_scheduled_page(self):
         block, asked = self.run_forecast()
         self.assertEqual(len(asked), 4)
-        for needle in ("時段預報", "高空分析", "逐日預報", "133 個系集成員"):
+        for needle in ("凌晨、上午、下午、晚上", "逐日高空分析", "逐日預報", "133 個系集成員", "這一週怎麼分段"):
             self.assertIn(needle, block)
+        for view in ("summary", "daily", "synoptic", "models", "risk", "verify"):
+            self.assertEqual(block.count(f'data-view="{view}"'), 1)
+        self.assertIn("用搜尋欄查的地點沒有保存過去的預報", block)  # 搜尋的地點沒有紀錄,不能校驗
         self.assertEqual(asked[1]["timezone"], "Asia/Taipei")  # 高空資料沿用地面資料的時區
         self.assertTrue(client.url_for(asked[0]).startswith("https://ensemble-api.open-meteo.com/v1/ensemble?latitude=25.05"))
 
     def test_upper_air_failure_still_gives_surface_forecast(self):
         block, _ = self.run_forecast(fail=("cross", "periods"))
         self.assertIn("逐日預報", block)
-        self.assertNotIn("高空分析", block)
-        self.assertNotIn("時段預報", block)
+        self.assertNotIn("逐日高空分析", block)
+        self.assertIn("這次沒有取得高空資料", block)
+        self.assertNotIn("凌晨、上午、下午、晚上", block)
 
     def test_engine_archive_contains_the_package(self):
         import zipfile

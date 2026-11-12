@@ -1,10 +1,19 @@
 """產生靜態預報網頁:python -m weekcast.site --out _site 台北 台中 高雄
 
-輸出 index.html(所有地點在同一頁,以分頁切換)與 data.json(同一份資料的
-機器可讀版本)。由 .github/workflows/pages.yml 定時執行並發布到 GitHub Pages。
+輸出 index.html、data.json(同一份資料的機器可讀版本)與 weekcast.zip(讓搜尋功能在
+瀏覽器裡執行同一份分析程式)。由 .github/workflows/pages.yml 定時執行並發布到
+GitHub Pages。
+
+網頁只有一個檔案,但用網址(#/overview、#/place/0/summary …)切換成幾個獨立的頁面:
+
+- 總覽:先講結論,加上所有地點的逐日預報表
+- 地點預報:上方是一週的時間軸,下面依「讀者想問的問題」分成六個分頁,順序就是
+  課堂預報報告的章節(摘要 → 逐日 → 綜觀分析 → 模式比較 → 不確定性 → 校驗)
+- 即時雷達
+- 說明:怎麼閱讀、資料來源、名詞解釋、注意事項
 
 data.json 另外帶著最近幾次執行的預報摘要(runs)。下次執行時用 --previous 把上一次
-發布的 data.json 讀回來,就能列出預報是連續往同方向修正,還是來回擺盪。
+發布的 data.json 讀回來,用來比較預報趨勢,以及校驗已經過去的日子。
 """
 
 from __future__ import annotations
@@ -14,73 +23,175 @@ import html
 import json
 import sys
 import zipfile
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import analysis, client, history, periods, report, upper
+from . import analysis, briefing, client, history, periods, report, upper, verify
 
 DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
-KEEP_RUNS = 16  # data.json 裡每個地點保留幾次執行的摘要(每 6 小時一次,約 4 天)
+KEEP_RUNS = 40  # data.json 裡每個地點保留幾次執行的摘要(每 6 小時一次,約 10 天,校驗要用)
 REPO_URL = "https://github.com/Brian950626/Weather"
+TYPHOON_URL = "https://lkt0713.github.io/Typhoon-Forecast/"
+ORDINALS = "一二三四五六七八九"
+TABS = (
+    ("summary", "摘要"),
+    ("daily", "逐日與時段"),
+    ("synoptic", "綜觀分析"),
+    ("models", "模式與系集"),
+    ("risk", "不確定性"),
+    ("verify", "校驗"),
+)
+FONTS = "https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&display=swap"
 
+# 配色取自手繪天氣圖的習慣:降雨區塗綠、暖色用紅、冷色用藍、槽線用褐色。
 CSS = """
-:root{--page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;
---axis:#c3c2b7;--series:#2a78d6;--series-soft:#b7d3f6;--good:#006300;--warn:#8a5a00;--bad:#b02a2a}
-@media (prefers-color-scheme:dark){:root{--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;
---grid:#2c2c2a;--axis:#383835;--series:#3987e5;--series-soft:#184f95;--good:#0ca30c;--warn:#fab219;--bad:#e66767}}
+:root{--paper:#f1f4f1;--sheet:#fcfdfb;--ink:#17201c;--ink2:#44524b;--muted:#69766e;--line:#d3dbd5;
+--rain:#2c7a57;--rain-soft:#d2e7da;--warm:#bf4226;--warm-soft:#f3d8ce;--cold:#2a5ca6;--cold-soft:#d5e0f1;--ochre:#8a5f12;--ochre-soft:#f0e4c6;
+--kai:"LXGW WenKai TC","BiauKai","DFKai-SB","Kaiti TC",KaiTi,serif;
+--sans:system-ui,-apple-system,"PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif}
+@media (prefers-color-scheme:dark){:root{--paper:#121815;--sheet:#1a221e;--ink:#e8eee9;--ink2:#b9c5bd;--muted:#93a198;--line:#2f3a34;
+--rain:#5dbf93;--rain-soft:#1f4a37;--warm:#f08462;--warm-soft:#5a2a1d;--cold:#7fa8ea;--cold-soft:#22375c;--ochre:#d8ae55;--ochre-soft:#4a3a16}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--page);color:var(--ink);font:15px/1.6 system-ui,-apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif}
-main{max-width:1080px;margin:0 auto;padding:20px 16px 48px}
-h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 8px}
-.sub{color:var(--ink2);font-size:13px;margin:0}
-nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
-nav button{font:inherit;padding:6px 16px;border:1px solid var(--axis);border-radius:999px;background:var(--surface);color:var(--ink);cursor:pointer}
-nav button[aria-selected=true]{background:var(--ink);color:var(--page);border-color:var(--ink)}
-nav .x{margin-left:4px;opacity:.6}nav .x:hover{opacity:1}
-#find{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 16px}
-#find input{font:inherit;flex:1 1 220px;max-width:340px;padding:7px 12px;border:1px solid var(--axis);border-radius:8px;background:var(--surface);color:var(--ink)}
-#find button,#hits button{font:inherit;padding:6px 14px;border:1px solid var(--axis);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer}
-#hits{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}#fmsg{font-size:13px;color:var(--ink2)}
-section.place{display:none}section.place.on{display:block}
-.card{background:var(--surface);border:1px solid var(--grid);border-radius:10px;padding:14px 16px;margin:12px 0}
-.days{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px}
-.day{background:var(--surface);border:1px solid var(--grid);border-radius:10px;padding:10px 12px}
-.day b{display:block;font-size:13px;color:var(--ink2);font-weight:600}
-.day .sky{font-size:15px;font-weight:600;margin:2px 0}
-.day .t{font-size:20px;font-weight:700}.day .t small{font-size:13px;font-weight:400;color:var(--ink2)}
-.day .p{font-size:13px;color:var(--ink2)}
-.conf{display:inline-block;font-size:12px;margin-top:4px;font-weight:600}
-.conf.高{color:var(--good)}.conf.中{color:var(--warn)}.conf.低{color:var(--bad)}
+html{scroll-padding-top:60px}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.7 var(--sans);font-variant-numeric:tabular-nums}
+a{color:inherit;text-decoration-color:var(--rain);text-decoration-thickness:2px;text-underline-offset:3px}
+a:hover{color:var(--rain)}
+:focus-visible{outline:2px solid var(--cold);outline-offset:2px}
+h1,h2,h3,.lede,.brand{font-family:var(--kai);font-weight:700;letter-spacing:.02em}
+h1{font-size:34px;line-height:1.25;margin:0 0 6px}
+h2{font-size:23px;line-height:1.35;margin:40px 0 10px}
+h3{font-size:18px;line-height:1.4;margin:22px 0 6px}
+p{margin:8px 0}
+.lede{font-size:21px;line-height:1.65;max-width:38em;margin:10px 0 18px}
+.sub{color:var(--ink2);font-size:14px;margin:4px 0;max-width:46em}
+ul{margin:8px 0;padding-left:22px;max-width:46em}li{margin:5px 0}
+.top{background:var(--sheet);border-bottom:2px solid var(--ink)}
+.top .in{max-width:1120px;margin:0 auto;padding:0 20px;display:flex;align-items:baseline;column-gap:28px;flex-wrap:wrap}
+.brand{font-size:22px;padding:13px 0 11px;text-decoration:none}
+.nav{display:flex;gap:2px}
+.nav a{padding:15px 12px 11px;text-decoration:none;border-bottom:4px solid transparent;color:var(--ink2);white-space:nowrap}
+.nav a[aria-current=page]{color:var(--ink);border-bottom-color:var(--rain);font-weight:600}
+#fresh{margin:0 0 0 auto;padding:6px 0;font-size:13px;color:var(--muted);max-width:none}
+main{max-width:1120px;margin:0 auto;padding:30px 20px 72px}
+.js .page:not(.on),.js article.place:not(.on),.js .view:not(.on){display:none}
+.sheet{background:var(--sheet);border:1px solid var(--line);border-radius:4px;padding:16px 18px;margin:10px 0}
 .scroll{overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}
-th,td{padding:6px 10px;text-align:left;border-bottom:1px solid var(--grid)}
-th{color:var(--ink2);font-weight:600}
-ul{margin:6px 0;padding-left:20px}li{margin:4px 0}
-svg{display:block;min-width:560px;width:100%}
-svg text{font:12px system-ui,sans-serif;fill:var(--muted)}
-svg .val{fill:var(--ink2)}svg .gridline{stroke:var(--grid)}svg .bar{fill:var(--series)}svg .range{fill:var(--series-soft)}
-svg g.hit:hover .bar{opacity:.8}
-#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--page);padding:6px 10px;border-radius:6px;font-size:12px;white-space:pre;display:none;z-index:9}
-.grid td.cell{position:relative;min-width:120px}
+table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.55}
+th,td{padding:9px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+thead th{font-weight:600;color:var(--ink2);border-bottom:2px solid var(--ink);white-space:nowrap}
+tbody th{font-weight:600;white-space:nowrap}
+tbody tr:last-child>*{border-bottom:0}
+table.tight td,table.tight th,table.models td:not(:last-child){white-space:nowrap}
+table.models td:last-child{min-width:16em}
+table.zone td{white-space:nowrap}table.zone td:nth-child(2){white-space:normal;min-width:8em}
+td small,th small{color:var(--ink2);font-size:13px}
+caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;padding:8px 12px 0}
+.wx{font-family:var(--kai);font-weight:700;font-size:16px}
+.ribwrap{overflow-x:auto;margin:6px 0 4px}
+.ribbon{display:grid;grid-template-columns:repeat(var(--n),minmax(94px,1fr));min-width:calc(var(--n)*94px);background:var(--sheet);border:1px solid var(--line);border-radius:4px}
+.stage{padding:7px 12px 9px;border-top:5px solid var(--ochre);border-bottom:1px solid var(--line);font-family:var(--kai);font-weight:700;line-height:1.4;background:var(--ochre-soft)}
+.stage.wet{border-top-color:var(--rain);background:var(--rain-soft)}
+.stage small{display:block;font:400 12px/1.5 var(--sans);color:var(--ink2)}
+.stage:not(.s1),.d:not(.d1){border-left:1px solid var(--line)}
+.d{padding:10px 6px 12px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center}
+.d b{font-size:15px}.d b span{color:var(--muted);font-weight:400;margin-left:4px}
+.d .wx{min-height:1.7em}
+.tcol{height:104px;display:flex;flex-direction:column;align-items:center;font-size:14px;line-height:1.5}
+.tcol s{display:block;min-height:0}
+.tcol i{display:block;width:12px;min-height:6px;border-radius:2px;background:linear-gradient(var(--warm),var(--cold))}
+.rcol{width:54px;height:38px;display:flex;align-items:flex-end;border-bottom:1px solid var(--ink2)}
+.rcol i{display:block;width:100%;background:var(--rain)}
+.pop{font-size:14px;font-weight:600}
+.conf{display:inline-flex;align-items:center;gap:2px;font-size:13px;color:var(--ink2);white-space:nowrap}
+.conf i{width:6px;height:11px;background:var(--line)}
+.conf.c1 i:nth-child(-n+1),.conf.c2 i:nth-child(-n+2),.conf.c3 i:nth-child(-n+3),.conf.c4 i:nth-child(-n+4),.conf.c5 i{background:var(--ink)}
+.conf em{font-style:normal;margin-left:5px}
+.key{font-size:13px;color:var(--ink2);margin:6px 0 0}
+.tabs{position:sticky;top:0;z-index:5;background:var(--paper);display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid var(--ink);margin:22px 0 0}
+.tabs button{font:inherit;background:none;border:0;border-bottom:4px solid transparent;padding:12px 14px 8px;color:var(--ink2);cursor:pointer;white-space:nowrap}
+.tabs button[aria-selected=true]{color:var(--ink);font-weight:600;border-bottom-color:var(--ink)}
+.view>h2:first-child{margin-top:26px}
+#places{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+#places button[role=tab],#hits button,#radar button{font:inherit;font-size:15px;padding:5px 13px;border:1px solid var(--ink2);border-radius:4px;background:transparent;color:var(--ink);cursor:pointer}
+#places button[aria-selected=true],#radar button[aria-pressed=true]{background:var(--ink);color:var(--sheet);border-color:var(--ink)}
+#places .x{margin-left:6px;opacity:.7}#places .x:hover{opacity:1}
+#find{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:10px 0 22px}
+#q{font:inherit;font-size:15px;padding:6px 10px;border:1px solid var(--ink2);border-radius:4px;background:var(--sheet);color:var(--ink);width:min(330px,100%)}
+#find>button{font:inherit;font-size:15px;padding:6px 14px;border:1px solid var(--ink);border-radius:4px;background:var(--ink);color:var(--sheet);cursor:pointer}
+#fmsg{font-size:14px;color:var(--ink2)}#hits{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}
+.stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));background:var(--sheet);border:1px solid var(--line);border-radius:4px;margin:10px 0}
+.stg{padding:14px 18px 16px;border-top:5px solid var(--ochre)}
+.stg.wet{border-top-color:var(--rain)}
+.stg .when{font-size:13px;color:var(--ink2);margin:0}
+.stg h3{margin:2px 0 8px;font-size:20px}
+.stg p{margin:6px 0;font-size:15px}
+.stg .why{font-size:13px;color:var(--ink2)}
+.reason{margin:14px 0 22px;padding-left:16px;border-left:5px solid var(--ochre)}
+.reason.wet{border-left-color:var(--rain)}
+.reason h3{margin-top:0}
+.reason dl{margin:6px 0;display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;font-size:15px;max-width:60em}
+.reason dt{font-weight:600;white-space:nowrap}.reason dd{margin:0}
+details.how{font-size:14px;color:var(--ink2);margin:8px 0;max-width:46em}
+details.how summary{cursor:pointer;color:var(--ink)}
+.verdict-ok{color:var(--rain);font-weight:600}.verdict-miss{color:var(--warm);font-weight:600}.verdict-fa{color:var(--ochre);font-weight:600}
+svg{display:block;min-width:620px;width:100%}
+svg text{font:12px var(--sans);fill:var(--muted)}
+svg .val{fill:var(--ink2)}svg .gridline{stroke:var(--line)}
+svg .hi{fill:var(--warm-soft);stroke:var(--warm)}svg .lo{fill:var(--cold-soft);stroke:var(--cold)}svg .rn{fill:var(--rain-soft);stroke:var(--rain)}
+svg .whi{stroke:var(--warm)}svg .wlo{stroke:var(--cold)}svg .wrn{stroke:var(--rain)}
+#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--sheet);padding:6px 10px;border-radius:4px;font-size:13px;line-height:1.5;white-space:pre;display:none;z-index:9}
+.grid td.cell{position:relative;min-width:128px;white-space:nowrap}
 .grid td.cell b{font-size:15px}.grid td.cell span{color:var(--ink2);margin-left:6px}
-.grid td.cell i{position:absolute;left:0;bottom:0;height:3px;background:var(--series);border-radius:2px}
-#radar .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
-#radar button{font:inherit;font-size:13px;padding:4px 12px;border:1px solid var(--axis);border-radius:999px;background:var(--surface);color:var(--ink);cursor:pointer}
-#radar button[aria-pressed=true]{background:var(--ink);color:var(--page);border-color:var(--ink)}
-#rtime{font-size:13px;color:var(--ink2);margin-left:auto}
-#map{height:440px;border-radius:8px;background:var(--grid)}
-#cwa{display:none;max-width:100%;border-radius:8px}
-footer{color:var(--ink2);font-size:12px;margin-top:32px}a{color:var(--series)}
+.grid td.cell i{position:absolute;left:0;bottom:0;height:3px;background:var(--rain)}
+#radar .bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+#rtime{font-size:14px;color:var(--ink2);margin-left:auto}
+#map{height:min(64vh,520px);min-height:340px;border-radius:4px;background:var(--line)}
+#cwa{display:none;max-width:100%;border-radius:4px}
+.wait{font-size:16px;color:var(--ink2);margin:30px 0}
+footer{color:var(--ink2);font-size:13px;margin-top:56px;padding-top:14px;border-top:1px solid var(--line);max-width:60em}
+@media (max-width:760px){
+h1{font-size:28px}.lede{font-size:19px}h2{font-size:21px}
+.top .in{padding:0 14px}main{padding:22px 14px 104px}
+#fresh{margin:0;padding:0 0 10px;flex-basis:100%}
+.nav{position:fixed;left:0;right:0;bottom:0;z-index:8;background:var(--sheet);border-top:2px solid var(--ink);justify-content:space-around;padding-bottom:env(safe-area-inset-bottom)}
+.nav a{flex:1;text-align:center;padding:9px 4px 11px;border-bottom:0;border-top:4px solid transparent;margin-top:-2px;font-size:15px}
+.nav a[aria-current=page]{border-top-color:var(--rain)}
+.reason dl{grid-template-columns:1fr}.reason dt{margin-top:6px}
+}
+@media (min-width:761px){.stg+.stg{border-left:1px solid var(--line)}}
 """
 
 JS = """
-const nav=document.querySelector('nav'),main=document.querySelector('main'),tip=document.getElementById('tip');
-const tabs=()=>[...nav.querySelectorAll('button[role=tab]')],secs=()=>[...document.querySelectorAll('section.place')];
-function show(i){tabs().forEach((b,j)=>b.setAttribute('aria-selected',i===j));secs().forEach((s,j)=>s.classList.toggle('on',i===j));
-try{localStorage.setItem('place',i)}catch(e){}if(window.radarMove)radarMove();
-const s=secs()[i];if(s&&s.dataset.pending)compute(s)}
-nav.addEventListener('click',e=>{const x=e.target.closest('.x');if(x){drop(x.parentElement);return}
-const b=e.target.closest('button[role=tab]');if(b)show(tabs().indexOf(b))});
+const pages=[...document.querySelectorAll('.page')],links=[...document.querySelectorAll('.nav a')],chips=document.getElementById('places'),tip=document.getElementById('tip');
+const TABS=__TABS__,TITLES={overview:'總覽',place:'地點預報',radar:'即時雷達',about:'說明'};
+const tabs=()=>[...chips.querySelectorAll('button[role=tab]')],secs=()=>[...document.querySelectorAll('article.place')];
+let cur=0,tab=TABS[0],lastPage=null;
+try{cur=+localStorage.getItem('place')||0}catch(e){}
+function parse(){const p=location.hash.replace(/^#\\/?/,'').split('/');return {page:TITLES[p[0]]?p[0]:'overview',i:p[1],tab:p[2]}}
+function go(page,i,t){const h='#/'+page+(page==='place'?'/'+i+'/'+t:'');if(location.hash===h)route();else location.hash=h}
+// 只顯示目前的地點與分頁;用搜尋加入、還沒算過的地點在這時才計算
+function paint(){const list=secs();if(cur>=list.length||cur<0)cur=0;
+ tabs().forEach((b,j)=>b.setAttribute('aria-selected',cur===j));
+ list.forEach((s,j)=>{s.classList.toggle('on',cur===j);
+  s.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.dataset.view===tab));
+  s.querySelectorAll('.tabs button').forEach(b=>b.setAttribute('aria-selected',b.dataset.tab===tab))});
+ try{localStorage.setItem('place',cur)}catch(e){}
+ links.forEach(a=>{if(a.dataset.page==='place')a.href='#/place/'+cur+'/'+tab});
+ const s=list[cur];if(s&&s.dataset.pending&&parse().page==='place')compute(s)}
+function route(){const r=parse();
+ pages.forEach(s=>s.classList.toggle('on',s.dataset.page===r.page));
+ links.forEach(a=>{if(a.dataset.page===r.page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')});
+ if(r.page==='place'){if(r.i!==undefined&&r.i!=='')cur=+r.i||0;tab=TABS.includes(r.tab)?r.tab:TABS[0]}
+ paint();
+ const here=secs()[cur];
+ document.title=(r.page==='place'&&here?here.dataset.name+' ':'')+TITLES[r.page]+'|一週天氣預報';
+ if(r.page==='radar'&&window.radarShow)radarShow();
+ if(lastPage!==null&&lastPage!==r.page)window.scrollTo(0,0);lastPage=r.page}
+window.addEventListener('hashchange',route);
+chips.addEventListener('click',e=>{const x=e.target.closest('.x');if(x){drop(x.parentElement);return}
+ const b=e.target.closest('button[role=tab]');if(b)go('place',tabs().indexOf(b),tab)});
+document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('.tabs button');if(b)go('place',cur,b.dataset.tab)});
 document.addEventListener('mousemove',e=>{const el=e.target.closest&&e.target.closest('[data-tip]');
 if(!el){tip.style.display='none';return}tip.textContent=el.dataset.tip;tip.style.display='block';
 tip.style.left=Math.min(e.clientX+14,innerWidth-tip.offsetWidth-8)+'px';tip.style.top=(e.clientY+14)+'px'});
@@ -88,11 +199,11 @@ tip.style.left=Math.min(e.clientX+14,innerWidth-tip.offsetWidth-8)+'px';tip.styl
 // ---- 自動更新:定時檢查有沒有新的預報,有就重新載入,不必手動重新整理 ----
 const fresh=document.getElementById('fresh'),built=fresh.dataset.generated;
 const local=t=>new Date(t).toLocaleString([], {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
-function stampText(extra){fresh.textContent='資料更新時間 '+local(built)+'。本頁每 10 分鐘自動檢查,有新預報會自動更新,不必手動重新整理'+(extra||'。')}
+function stampText(extra){fresh.textContent='更新於 '+local(built)+(extra||'')}
 stampText();
 async function refresh(){try{const d=await(await fetch('data.json?t='+Date.now(),{cache:'no-store'})).json();
- if(d.generated&&d.generated!==built&&new Date(d.generated)>new Date(built)){location.replace(location.pathname+'?v='+Date.parse(d.generated));return}
- stampText('(上次檢查 '+local(Date.now())+')。')}catch(e){stampText('(剛才檢查失敗,稍後會再試;也可以手動重新整理)。')}}
+ if(d.generated&&d.generated!==built&&new Date(d.generated)>new Date(built)){location.replace(location.pathname+'?v='+Date.parse(d.generated)+location.hash);return}
+ stampText(',上次檢查 '+local(Date.now()))}catch(e){stampText(',剛才檢查失敗,稍後再試')}}
 setInterval(refresh,6e5);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
 
 // ---- 搜尋任意地點:在瀏覽器裡執行同一份 Python 分析程式 ----
@@ -109,29 +220,29 @@ function saved(){try{return JSON.parse(localStorage.getItem('custom')||'[]')}cat
 function keep(list){try{localStorage.setItem('custom',JSON.stringify(list))}catch(e){}}
 function addTab(name,lat,lon){
  const b=document.createElement('button');b.setAttribute('role','tab');b.dataset.custom='1';
- b.innerHTML=esc(name)+' <span class="x" title="移除" aria-label="移除">×</span>';nav.appendChild(b);
- const s=document.createElement('section');s.className='place';s.dataset.lat=lat;s.dataset.lon=lon;s.dataset.name=name;s.dataset.pending='1';
- s.innerHTML='<h1>'+esc(name)+' 一週天氣預報</h1><p class="sub wait"></p>';
- const last=secs().pop();last.after(s);return tabs().length-1}
+ b.innerHTML=esc(name)+' <span class="x" title="移除" aria-label="移除">×</span>';chips.appendChild(b);
+ const s=document.createElement('article');s.className='place';s.dataset.lat=lat;s.dataset.lon=lon;s.dataset.name=name;s.dataset.pending='1';
+ s.innerHTML='<h1>'+esc(name)+'</h1><p class="wait"></p>';
+ secs().pop().after(s);return tabs().length-1}
 function drop(b){const i=tabs().indexOf(b),s=secs()[i];keep(saved().filter(p=>!(p.name===s.dataset.name&&p.lat==s.dataset.lat)));
- b.remove();s.remove();show(0)}
+ b.remove();s.remove();go('place',0,TABS[0])}
 async function compute(s){delete s.dataset.pending;const w=s.querySelector('.wait');
- try{w.textContent='正在載入分析程式(第一次約需 10–20 秒)…';const p=await engine();
-  w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析…';
+ try{w.textContent='正在載入分析程式,第一次約需 10–20 秒。';const p=await engine();
+  w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析。';
   const html=await p.globals.get('forecast')(s.dataset.name,+s.dataset.lat,+s.dataset.lon);
-  s.innerHTML='<h1>'+esc(s.dataset.name)+' 一週天氣預報</h1>'+html+'<p class="sub">這個地點是在你的瀏覽器裡即時計算的,重新整理頁面後點選分頁會再算一次。</p>'}
- catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+String(e.message||e).split('\\n').pop()+'。稍等一分鐘後再點一次分頁重試。'}}
+  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint()}
+ catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+String(e.message||e).split('\\n').pop()+'。等一分鐘後再點一次這個地點重試。'}}
 function open(name,lat,lon){hits.innerHTML='';msg.textContent='';box.value='';
  const list=saved();if(!list.some(p=>p.name===name&&p.lat==lat)){list.push({name,lat,lon});keep(list)}
- show(addTab(name,lat,lon))}
+ go('place',addTab(name,lat,lon),TABS[0])}
 form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.trim();hits.innerHTML='';if(!q)return;
  const m=q.match(/^(-?\\d+(?:\\.\\d+)?)\\s*[,,\\s]\\s*(-?\\d+(?:\\.\\d+)?)$/);
  if(m&&Math.abs(+m[1])<=90&&Math.abs(+m[2])<=180){open((+m[1]).toFixed(2)+', '+(+m[2]).toFixed(2),+m[1],+m[2]);return}
- msg.textContent='搜尋中…';
+ msg.textContent='搜尋中';
  try{const d=await(await fetch('https://photon.komoot.io/api/?limit=8&lat=23.7&lon=121&q='+encodeURIComponent(q))).json();
   const seen=new Set(),out=[];
   for(const f of d.features||[]){const p=f.properties,[lon,lat]=f.geometry.coordinates;
-   const where=[p.city,p.county,p.state,p.country].filter((v,i,a)=>v&&v!==p.name&&a.indexOf(v)===i).join(' · ');
+   const where=[p.city,p.county,p.state,p.country].filter((v,i,a)=>v&&v!==p.name&&a.indexOf(v)===i).join('、');
    const key=lat.toFixed(1)+','+lon.toFixed(1);if(seen.has(key))continue;seen.add(key);out.push({name:p.name||q,where,lat,lon})}
   if(!out.length){msg.textContent='找不到「'+q+'」。可以改輸入座標,例如 22.37,120.59';return}
   msg.textContent='請選擇:';
@@ -139,90 +250,141 @@ form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.tr
    b.textContent=o.name+(o.where?'('+o.where+')':'');b.addEventListener('click',()=>open(o.name,+o.lat.toFixed(4),+o.lon.toFixed(4)));hits.appendChild(b)})}
  catch(err){msg.textContent='地名搜尋服務暫時無法使用。可以改輸入座標,例如 22.37,120.59'}});
 saved().forEach(p=>addTab(p.name,p.lat,p.lon));
-let start=0;try{start=+localStorage.getItem('place')||0}catch(e){}show(start<tabs().length?start:0);
+route();
 """
 
 esc = html.escape
 
 
-def _temperature_chart(forecast) -> str:
-    """每天一條浮動長條:淺色是 10–90% 的可能範圍,深色是低溫到高溫的中位數。"""
-    width, height, left, top, bottom = 720, 220, 44, 16, 30
-    lo = min(f.tmin.p10 for f in forecast)
-    hi = max(f.tmax.p90 for f in forecast)
-    lo, hi = 2 * (int(lo) // 2) - 2, 2 * (int(hi) // 2) + 4
-    plot = height - top - bottom
-    y = lambda value: top + plot * (hi - value) / (hi - lo)
-    slot = (width - left) / len(forecast)
-    parts = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="每日高低溫範圍">']
-    step = 2 if hi - lo <= 16 else 4
-    for tick in range(lo, hi + 1, step):
-        parts.append(f'<line class="gridline" x1="{left}" x2="{width}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>')
-        parts.append(f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">{tick}°</text>')
-    for i, f in enumerate(forecast):
-        cx = left + slot * (i + 0.5)
-        tip = (
-            f"{report._label(f.day)}\n高溫 {f.tmax.p50:.0f}°C(範圍 {f.tmax.p10:.0f}–{f.tmax.p90:.0f})\n"
-            f"低溫 {f.tmin.p50:.0f}°C(範圍 {f.tmin.p10:.0f}–{f.tmin.p90:.0f})"
-        )
-        parts.append(f'<g class="hit" data-tip="{esc(tip)}">')
-        parts.append(f'<rect x="{cx - slot / 2:.1f}" y="{top}" width="{slot:.1f}" height="{plot}" fill="transparent"/>')
-        parts.append(
-            f'<rect class="range" x="{cx - 9:.1f}" y="{y(f.tmax.p90):.1f}" width="18" '
-            f'height="{y(f.tmin.p10) - y(f.tmax.p90):.1f}" rx="4"/>'
-        )
-        parts.append(
-            f'<rect class="bar" x="{cx - 9:.1f}" y="{y(f.tmax.p50):.1f}" width="18" '
-            f'height="{max(2, y(f.tmin.p50) - y(f.tmax.p50)):.1f}" rx="4"/>'
-        )
-        parts.append(f'<text class="val" x="{cx:.1f}" y="{y(f.tmax.p90) - 4:.1f}" text-anchor="middle">{f.tmax.p50:.0f}°</text>')
-        parts.append(f'<text class="val" x="{cx:.1f}" y="{y(f.tmin.p10) + 13:.1f}" text-anchor="middle">{f.tmin.p50:.0f}°</text>')
-        parts.append(f'<text x="{cx:.1f}" y="{height - 6}" text-anchor="middle">{report._label(f.day)}</text></g>')
-    parts.append("</svg>")
-    return '<div class="scroll">' + "".join(parts) + "</div>"
+# --------------------------------------------------------------------------- #
+# 小零件
+# --------------------------------------------------------------------------- #
 
 
-def _rain_chart(forecast) -> str:
-    width, height, left, top, bottom = 720, 150, 44, 22, 30
-    plot = height - top - bottom
-    y = lambda value: top + plot * (1 - value)
-    slot = (width - left) / len(forecast)
-    parts = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="每日降雨機率">']
-    for tick in (0, 0.5, 1):
-        parts.append(f'<line class="gridline" x1="{left}" x2="{width}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>')
-        parts.append(f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">{tick:.0%}</text>')
-    for i, f in enumerate(forecast):
-        cx = left + slot * (i + 0.5)
-        tip = f"{report._label(f.day)}\n降雨機率 {f.pop:.0%}\n雨量中位數 {f.precip.p50:.0f} mm,偏多時 {f.precip.p90:.0f} mm"
-        parts.append(f'<g class="hit" data-tip="{esc(tip)}">')
-        parts.append(f'<rect x="{cx - slot / 2:.1f}" y="{top}" width="{slot:.1f}" height="{plot}" fill="transparent"/>')
-        tall = max(1.0, plot * f.pop)
-        parts.append(f'<rect class="bar" x="{cx - 9:.1f}" y="{top + plot - tall:.1f}" width="18" height="{tall:.1f}" rx="4"/>')
-        parts.append(f'<text class="val" x="{cx:.1f}" y="{top + plot - tall - 4:.1f}" text-anchor="middle">{f.pop:.0%}</text>')
-        parts.append(f'<text x="{cx:.1f}" y="{height - 6}" text-anchor="middle">{report._label(f.day)}</text></g>')
-    parts.append("</svg>")
-    return '<div class="scroll">' + "".join(parts) + "</div>"
-
-
-def _table(rows: list[list[str]]) -> str:
+def _table(rows: list[list[str]], cls: str = "", caption: str = "", head_col: bool = True) -> str:
+    """文字表格;第一列是標題,第一欄是列標題。"""
     head = "".join(f"<th>{esc(c)}</th>" for c in rows[0])
-    body = "".join("<tr>" + "".join(f"<td>{esc(c)}</td>" for c in row) + "</tr>" for row in rows[1:])
-    return f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+    body = ""
+    for row in rows[1:]:
+        cells = "".join(f"<th>{esc(c)}</th>" if i == 0 and head_col else f"<td>{esc(c)}</td>" for i, c in enumerate(row))
+        body += f"<tr>{cells}</tr>"
+    note = f"<caption>{esc(caption)}</caption>" if caption else ""
+    return f'<div class="scroll"><table class="{cls}">{note}<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
 def _list(items: list[str]) -> str:
     return "<ul>" + "".join(f"<li>{esc(i)}</li>" for i in items) + "</ul>" if items else ""
 
 
-def _surface_rows(forecast) -> list[list[str]]:
-    rows = [["日期", "天氣", "高溫 °C(10–90%)", "低溫 °C(10–90%)", "降雨機率", "雨量 mm 中位/偏多", "最大風 km/h", "信心"]]
-    for f in forecast:
-        wind = "–" if not f.wind else f"{f.wind.p50:.0f}" + (f"(陣風 {f.gust.p50:.0f})" if f.gust else "")
-        rows.append(
-            [report._label(f.day), f.sky, report._range(f.tmax), report._range(f.tmin), f"{f.pop:.0%}",
-             f"{f.precip.p50:.0f} / {f.precip.p90:.0f}", wind, f"{f.confidence_label} {f.confidence}"]
+def _how(text: str, title: str = "怎麼看這張表") -> str:
+    return f'<details class="how"><summary>{esc(title)}</summary><p>{esc(text)}</p></details>'
+
+
+def _meter(label: str) -> str:
+    """五格的信心度:格子越多越有把握,旁邊同時寫出文字。"""
+    level = {"高": 5, "中高": 4, "中": 3, "中低": 2, "低": 1}.get(label, 3)
+    return f'<span class="conf c{level}">{"<i></i>" * 5}<em>信心度{esc(label)}</em></span>'
+
+
+def _day(day: str) -> str:
+    return briefing.label(day)
+
+
+# --------------------------------------------------------------------------- #
+# 一週時間軸
+# --------------------------------------------------------------------------- #
+
+
+def _ribbon(forecast, brief: briefing.Briefing) -> str:
+    """地點頁最上面的時間軸:上排是時段與主要影響系統,下面每天一欄。"""
+    low = min(f.tmin.p50 for f in forecast)
+    high = max(f.tmax.p50 for f in forecast)
+    parts = [f'<div class="ribwrap"><div class="ribbon" style="--n:{len(forecast)}">']
+    for stage in brief.stages:
+        parts.append(
+            f'<div class="stage s{stage.index}{"" if stage.stable else " wet"}" style="grid-column:span {len(stage.days)}">'
+            f"<small>時段{ORDINALS[stage.index - 1]}</small>{esc(stage.headline)}</div>"
         )
-    return rows
+    for i, f in enumerate(forecast, 1):
+        d = datetime.fromisoformat(f.day)
+        tip = (
+            f"{_day(f.day)}\n高溫 {f.tmax.p50:.0f}°C(10–90% 範圍 {f.tmax.p10:.0f}–{f.tmax.p90:.0f})\n"
+            f"低溫 {f.tmin.p50:.0f}°C(範圍 {f.tmin.p10:.0f}–{f.tmin.p90:.0f})\n"
+            f"降雨機率 {f.pop:.0%},雨量中位數 {f.precip.p50:.0f} mm、偏多時 {f.precip.p90:.0f} mm"
+        )
+        parts.append(
+            f'<div class="d d{i}" data-tip="{esc(tip)}"><b>{d.month}/{d.day}<span>{"一二三四五六日"[d.weekday()]}</span></b>'
+            f'<span class="wx">{esc(f.sky)}</span>'
+            f'<div class="tcol"><s style="flex:{high - f.tmax.p50:.2f}"></s><span>{f.tmax.p50:.0f}°</span>'
+            f'<i style="flex:{max(f.tmax.p50 - f.tmin.p50, 0.1):.2f}"></i><span>{f.tmin.p50:.0f}°</span><s style="flex:{f.tmin.p50 - low:.2f}"></s></div>'
+            f'<div class="rcol"><i style="height:{f.pop * 100:.0f}%"></i></div><span class="pop">降雨 {f.pop:.0%}</span>'
+            f"{_meter(f.confidence_label)}</div>"
+        )
+    parts.append("</div></div>")
+    parts.append('<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。綠色的時段有天氣系統影響。</p>')
+    return "".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# 圖
+# --------------------------------------------------------------------------- #
+
+
+def _box_chart(forecast) -> str:
+    """系集氣象圖:方框是 25–75%、細線是 10–90%、橫線是中位數。紅色高溫、藍色低溫。"""
+    width, height, left, top, bottom = 760, 230, 44, 14, 30
+    lo = min(f.tmin.p10 for f in forecast)
+    hi = max(f.tmax.p90 for f in forecast)
+    lo, hi = 2 * (int(lo) // 2) - 2, 2 * (int(hi) // 2) + 4
+    plot = height - top - bottom
+    y = lambda value: top + plot * (hi - value) / (hi - lo)
+    slot = (width - left) / len(forecast)
+    parts = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="每日高低溫的系集分布">']
+    for tick in range(lo, hi + 1, 2 if hi - lo <= 16 else 4):
+        parts.append(f'<line class="gridline" x1="{left}" x2="{width}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>')
+        parts.append(f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">{tick}°</text>')
+    for i, f in enumerate(forecast):
+        cx = left + slot * (i + 0.5)
+        tip = (
+            f"{_day(f.day)}\n高溫:中位數 {f.tmax.p50:.1f}°C,一半成員在 {f.tmax.p25:.1f}–{f.tmax.p75:.1f},八成在 {f.tmax.p10:.1f}–{f.tmax.p90:.1f}\n"
+            f"低溫:中位數 {f.tmin.p50:.1f}°C,一半成員在 {f.tmin.p25:.1f}–{f.tmin.p75:.1f},八成在 {f.tmin.p10:.1f}–{f.tmin.p90:.1f}"
+        )
+        parts.append(f'<g data-tip="{esc(tip)}"><rect x="{cx - slot / 2:.1f}" y="{top}" width="{slot:.1f}" height="{plot}" fill="transparent"/>')
+        for spread, cls, dx in ((f.tmax, "hi", -11), (f.tmin, "lo", 11)):
+            x = cx + dx
+            parts.append(f'<line class="w{cls}" x1="{x:.1f}" x2="{x:.1f}" y1="{y(spread.p90):.1f}" y2="{y(spread.p10):.1f}"/>')
+            parts.append(
+                f'<rect class="{cls}" x="{x - 8:.1f}" y="{y(spread.p75):.1f}" width="16" height="{max(2.0, y(spread.p25) - y(spread.p75)):.1f}"/>'
+            )
+            parts.append(f'<line class="w{cls}" stroke-width="2.5" x1="{x - 8:.1f}" x2="{x + 8:.1f}" y1="{y(spread.p50):.1f}" y2="{y(spread.p50):.1f}"/>')
+        parts.append(f'<text x="{cx:.1f}" y="{height - 8}" text-anchor="middle">{esc(report._label(f.day))}</text></g>')
+    parts.append("</svg>")
+    return '<div class="scroll">' + "".join(parts) + "</div>"
+
+
+def _rain_chart(forecast) -> str:
+    """日雨量的系集分布(方框 25–75%、細線到 90%),上方標出降雨機率。"""
+    width, height, left, top, bottom = 760, 170, 44, 24, 30
+    plot = height - top - bottom
+    peak = max(5.0, max(f.precip.p90 for f in forecast))
+    peak = 5 * (int(peak) // 5 + 1)
+    y = lambda value: top + plot * (1 - min(value, peak) / peak)
+    slot = (width - left) / len(forecast)
+    parts = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="每日雨量的系集分布與降雨機率">']
+    for tick in (0, peak / 2, peak):
+        parts.append(f'<line class="gridline" x1="{left}" x2="{width}" y1="{y(tick):.1f}" y2="{y(tick):.1f}"/>')
+        parts.append(f'<text x="{left - 6}" y="{y(tick) + 4:.1f}" text-anchor="end">{tick:.0f}</text>')
+    for i, f in enumerate(forecast):
+        cx = left + slot * (i + 0.5)
+        tip = f"{_day(f.day)}\n降雨機率 {f.pop:.0%}(日雨量達 1 mm 的成員比例)\n雨量中位數 {f.precip.p50:.1f} mm,一半成員在 {f.precip.p25:.1f}–{f.precip.p75:.1f},偏多時 {f.precip.p90:.1f}"
+        parts.append(f'<g data-tip="{esc(tip)}"><rect x="{cx - slot / 2:.1f}" y="{top}" width="{slot:.1f}" height="{plot}" fill="transparent"/>')
+        parts.append(f'<line class="wrn" x1="{cx:.1f}" x2="{cx:.1f}" y1="{y(f.precip.p90):.1f}" y2="{y(f.precip.p10):.1f}"/>')
+        parts.append(f'<rect class="rn" x="{cx - 10:.1f}" y="{y(f.precip.p75):.1f}" width="20" height="{max(2.0, y(f.precip.p25) - y(f.precip.p75)):.1f}"/>')
+        parts.append(f'<line class="wrn" stroke-width="2.5" x1="{cx - 10:.1f}" x2="{cx + 10:.1f}" y1="{y(f.precip.p50):.1f}" y2="{y(f.precip.p50):.1f}"/>')
+        parts.append(f'<text class="val" x="{cx:.1f}" y="{top - 8}" text-anchor="middle">{f.pop:.0%}</text>')
+        parts.append(f'<text x="{cx:.1f}" y="{height - 8}" text-anchor="middle">{esc(report._label(f.day))}</text></g>')
+    parts.append("</svg>")
+    return '<div class="scroll">' + "".join(parts) + "</div>"
 
 
 def _period_grid(rows) -> str:
@@ -230,7 +392,7 @@ def _period_grid(rows) -> str:
     head = "".join(f"<th>{name} {start:02d}–{end:02d}</th>" for name, start, end in periods.PERIODS)
     body = []
     for day, cells in periods.by_day(rows).items():
-        tds = [f"<td>{esc(report._label(day))}</td>"]
+        tds = [f"<th>{esc(report._label(day))}</th>"]
         for name, _, _ in periods.PERIODS:
             c = cells.get(name)
             if c is None or c.temp is None:
@@ -251,30 +413,380 @@ def _period_grid(rows) -> str:
     return f'<div class="scroll"><table class="grid"><thead><tr><th>日期</th>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
 
+# --------------------------------------------------------------------------- #
+# 地點頁的六個分頁
+# --------------------------------------------------------------------------- #
+
+
+def _summary_view(forecast, brief, comparison) -> str:
+    blocks = "".join(
+        f'<div class="stg{"" if s.stable else " wet"}"><p class="when">時段{ORDINALS[s.index - 1]} {esc(s.span)}</p><h3>{esc(s.headline)}</h3>'
+        f"<p>{esc(s.weather)},高溫 {esc(briefing._range(s.tmax, '°C'))}、低溫 {esc(briefing._range(s.tmin, '°C'))},"
+        f"降雨機率 {esc(briefing._range([p * 100 for p in s.pop], '%'))}。</p>"
+        f'<p>{_meter(s.confidence_label)}</p><p class="why">{esc(";".join(s.reasons))}</p></div>'
+        for s in brief.stages
+    )
+    parts = ["<h2>這一週怎麼分段</h2>", f'<div class="stages">{blocks}</div>']
+    parts.append("<h2>注意事項與劇烈天氣</h2>")
+    if brief.hazards:
+        parts.append(_table([["危害", "時間", "說明"], *([a, b, c] for a, b, c in brief.hazards)]))
+    else:
+        parts.append('<p class="sub">這一週沒有大雨、強風或明顯降溫的訊號。</p>')
+    parts.append("<h2>重點</h2>" + _list(report.highlights(forecast)))
+    if comparison:
+        parts.append(f"<h2>和 {comparison.age_hours:.0f} 小時前的預報比</h2>" + _list(report.comparison_lines(comparison)))
+    return "".join(parts)
+
+
+def _daily_view(forecast, brief, period_list) -> str:
+    rows = [["日期", "主要影響系統", "天氣", "高溫 °C", "低溫 °C", "降雨機率", "雨量 mm", "最大風 km/h", "信心度"]]
+    for f, role in zip(forecast, brief.roles):
+        wind = "–" if not f.wind else f"{f.wind.p50:.0f}" + (f"(陣風 {f.gust.p50:.0f})" if f.gust else "")
+        rows.append(
+            [report._label(f.day), role.system, f.sky, report._range(f.tmax), report._range(f.tmin), f"{f.pop:.0%}",
+             f"{f.precip.p50:.0f} / {f.precip.p90:.0f}", wind, f"{f.confidence_label}({f.confidence})"]
+        )
+    parts = [
+        "<h2>逐日預報</h2>",
+        _table(rows, caption="氣溫是所有成員的中位數,括號是 10–90% 的範圍;雨量是中位數/偏多時(90 百分位);降雨機率是日雨量達 1 mm 的成員比例。"),
+    ]
+    if period_list:
+        parts += [
+            "<h2>一天之內:凌晨、上午、下午、晚上</h2>",
+            '<p class="sub">每格是該時段的氣溫、天氣與 6 小時內的降雨機率,底部橫條越長越容易下雨。鋒面晚到半天,整天的預報仍然對,'
+            "時段卻會整個錯開,所以三天以後的時段只當參考。</p>",
+            _period_grid(period_list),
+        ]
+    return "".join(parts)
+
+
+def _synoptic_view(forecast, brief, upper_days, signal_list, southern: bool) -> str:
+    parts = ["<h2>現況:由地面往上看</h2>"]
+    if brief.current:
+        parts.append(_table([["層次", "觀察重點", "對預報的意義"], *([a, b, c] for a, b, c in brief.current)],
+                            caption=f"{_day(forecast[0].day)} 的日平均,系集中位數。"))
+    if not upper_days:
+        parts.append('<p class="sub">這次沒有取得高空資料,所以只有地面的判斷,沒有各層的分析。</p>')
+    else:
+        parts.append("<h2>各時段的預報理由</h2>")
+        parts.append('<p class="sub">每個時段依 500 hPa 槽脊、850 與 925 hPa、250 hPa 噴流、水氣的順序看,最後檢查高低層是否配合。</p>')
+        for s in brief.stages:
+            items = "".join(f"<dt>{esc(level)}</dt><dd>{esc(text)}</dd>" for level, text in s.rationale)
+            parts.append(
+                f'<div class="reason{"" if s.stable else " wet"}"><h3>時段{ORDINALS[s.index - 1]} {esc(s.span)} {esc(s.headline)}</h3>'
+                f"<dl>{items}<dt>垂直結構檢查</dt><dd>{esc(s.coupling)}</dd></dl></div>"
+            )
+        parts += [
+            "<h2>逐日高空分析</h2>",
+            _table(report.upper_rows(upper_days), "tight"),
+            _how(
+                "ECMWF 與 AIFS 系集的中位數。風速 m/s,輻散 10⁻⁵/s(正值是高層空氣流出,有利下方上升),平流 °C/日(正值是暖平流)。"
+                "噴流軸欄是 250 hPa 最大風速相對測站的位置與風速;槽脊欄的度數是槽線離測站的經度。925 風欄寫成「西→東北」代表當天低層風向轉變,"
+                "也就是鋒面通過。PWAT 是整層可降水量(mm);K 指數 30 以上或 CAPE 1000 J/kg 以上容易有雷雨。"
+            ),
+            "<h2>高空條件和地面預報對不對得上</h2>",
+            _list(report.upper_impact(upper_days, forecast, southern)),
+        ]
+    if signal_list:
+        by_day: dict[str, list[str]] = {}
+        for s in signal_list:
+            by_day.setdefault(s.day, []).append(s.text)
+        parts.append("<h2>天氣型態的轉變</h2>" + _list([f"{report._label(d)}:" + ";".join(t) + "。" for d, t in by_day.items()]))
+    parts.append(
+        '<h2>對照實際的天氣圖</h2><p class="sub">這裡的分析只用單點的數值,看不到系統的形狀。判斷前請對照'
+        '<a href="https://www.cwa.gov.tw/V8/C/W/analysis.html">中央氣象署的地面天氣圖</a>、'
+        '<a href="https://www.cwa.gov.tw/V8/C/W/OBS_Sat.html">衛星雲圖</a>與'
+        '<a href="https://www.tropicaltidbits.com/analysis/models/">Tropical Tidbits 的模式圖</a>;'
+        f'有熱帶系統時看<a href="{TYPHOON_URL}">Pillar 熱帶氣旋預報</a>。</p>'
+    )
+    return "".join(parts)
+
+
+def _models_view(forecast, brief, ens, comparison) -> str:
+    names = list(ens.systems)
+    rows = [["日期", *names, "綜合", "判斷與理由"]]
+    cell = lambda v: f"{v[0]:.0f}° {v[1]:.0%} {v[2]:.0f} mm"
+    for m in brief.models:
+        rows.append([report._label(m.day), *(cell(m.systems[n]) if n in m.systems else "–" for n in names), cell(m.blend), m.verdict])
+    counts = "、".join(f"{s} {ens.member_count(s)} 個成員" for s in names)
+    parts = [
+        "<h2>各模式怎麼說</h2>",
+        _table(rows, "models", "每格依序是高溫、降雨機率、日雨量中位數。各模式整週固定的溫度偏差已先扣掉。"),
+        f'<p class="sub">{esc(counts)}。每套系集的總權重相同,成員多的不會壓過成員少的。ECMWF 與 AIFS 來自同一個中心,'
+        "兩者同時出錯的機會比和 GEFS 同時出錯高。</p>",
+        "<h2>系集分布</h2>",
+        '<div class="sheet">' + _box_chart(forecast) + "</div>",
+        '<div class="sheet">' + _rain_chart(forecast) + "</div>",
+        _how("上圖紅色是高溫、藍色是低溫,下圖是日雨量(mm),上方的百分比是降雨機率。方框是中間一半的成員(25–75%),細線涵蓋八成(10–90%),"
+             "粗橫線是中位數。方框越窄,成員越一致、信心越高。系集的離散度通常偏小,實際誤差會比方框寬。", "怎麼看這兩張圖"),
+        f'<p class="sub">模式格點海拔 {ens.meta.get("elevation") or 0:.0f} m。和實際地點的海拔差越多,氣溫的誤差越大。</p>',
+        "<h2>預報趨勢:和前幾次比</h2>",
+    ]
+    if comparison:
+        parts.append(
+            f'<p class="sub">和 {comparison.age_hours:.0f} 小時前的預報比較。連續幾次往同一個方向修正,趨勢較可信;'
+            "來回擺盪代表模式還沒有定論。穩定不等於準確。</p>" + _list(report.comparison_lines(comparison))
+        )
+    else:
+        parts.append('<p class="sub">還沒有 5 小時以前的預報可以比較。預設地點每 6 小時更新一次,之後這裡會列出每一天的預報改了多少。</p>')
+    return "".join(parts)
+
+
+def _risk_view(forecast, brief) -> str:
+    rows = [["時段", "信心度", "理由"]]
+    for s in brief.stages:
+        rows.append([f"時段{ORDINALS[s.index - 1]} {s.span}", f"{s.confidence_label}({s.confidence})", ";".join(s.reasons)])
+    parts = [
+        "<h2>各時段的信心度</h2>",
+        _table(rows),
+        _how("信心度由四件事扣分:成員的高溫有多分散、各模式之間差多少、降雨機率是否接近五五波、預報時效有多遠。它是經驗分數,不是命中率;"
+             "80 以上為高、65 以上中高、50 以上中、35 以上中低。", "信心度怎麼算"),
+        "<h2>替代情境</h2>",
+    ]
+    if brief.scenarios:
+        rows = [["日期", "情境", "內容", "發生條件", "可能性"]]
+        for s in brief.scenarios:
+            rows.append([report._label(s.day), f"{s.name}{'(主要)' if s.name == 'A' else ''}", s.content, s.condition, f"{s.likelihood}({s.share:.0%} 的成員)"])
+        parts.append(_table(rows, caption="可能性是成員比例換成的定性描述,不是官方機率。"))
+    else:
+        parts.append('<p class="sub">這一週沒有模式分成兩派、或下不下雨五五波的日子。</p>')
+    parts.append("<h2>接下來要觀察什麼</h2>")
+    parts.append(_list(brief.watch) if brief.watch else '<p class="sub">目前沒有特別需要追蹤的項目。</p>')
+    notes = report.uncertainty(forecast)
+    if notes:
+        parts.append("<h2>分歧的細節</h2>" + _list(notes))
+    return "".join(parts)
+
+
+def _verify_view(result: verify.Verification | None, stored: bool) -> str:
+    head = "<h2>過去幾天報得準不準</h2>"
+    if result is None:
+        why = (
+            "還沒有可以校驗的紀錄。網站會保存每一次的預報,等那一天過去之後,再拿來和實際狀況比較;開始保存一天後,這裡就會有結果。"
+            if stored
+            else "用搜尋欄查的地點沒有保存過去的預報,所以無法校驗。預設地點才有這一頁的內容。"
+        )
+        return head + f'<p class="sub">{why}</p>'
+    tag = {"有對": "verdict-ok", "漏報": "verdict-miss", "空報": "verdict-fa"}
+    score_rows = [["幾天前的預報", "樣本", "高溫平均誤差", "高溫平均絕對誤差", "低溫平均誤差", "低溫平均絕對誤差", "降雨:有對 / 漏報 / 空報"]]
+    for s in result.scores:
+        score_rows.append([f"{s.lead} 天前", f"{s.count} 天", f"{s.tmax_bias:+.1f}°C", f"{s.tmax_mae:.1f}°C", f"{s.tmin_bias:+.1f}°C",
+                           f"{s.tmin_mae:.1f}°C", f"{s.hits} / {s.misses} / {s.false_alarms}"])
+    head_cells = "".join(f"<th>{lead} 天前的預報</th>" for lead in verify.LEADS)
+    body = []
+    for day in sorted(result.observed, reverse=True):
+        if not any(result.at(day, lead) for lead in range(1, verify.MAX_LEAD + 1)):
+            continue
+        seen = result.observed[day]
+        tds = [f"<th>{esc(report._label(day))}</th>", f'<td>{seen["tmax"]:.0f}° / {seen["tmin"]:.0f}°<br><small>雨量 {seen["rain"]:.1f} mm</small></td>']
+        for lead in verify.LEADS:
+            c = result.at(day, lead)
+            if c is None:
+                tds.append("<td>–</td>")
+                continue
+            tds.append(
+                f"<td>{c.tmax:.0f}° / {c.tmin:.0f}°,降雨 {c.pop:.0%}<br><small>高溫 {c.tmax_error:+.1f}、低溫 {c.tmin_error:+.1f},"
+                f'降雨<span class="{tag[c.rain]}">{c.rain}</span></small></td>'
+            )
+        body.append("<tr>" + "".join(tds) + "</tr>")
+    daily = (
+        f'<div class="scroll"><table><thead><tr><th>日期</th><th>實際(高 / 低)</th>{head_cells}</tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table></div>'
+    )
+    return (
+        head
+        + '<p class="sub">誤差是預報減實際,正值代表預報偏暖。降雨機率 40% 以上算「報了會下雨」,實際日雨量 1 mm 以上算「有下雨」;'
+        "沒報卻下了是漏報,報了卻沒下是空報。</p>"
+        + _table(score_rows)
+        + "<h2>逐日對照</h2>"
+        + daily
+        + _how("「實際」不是測站觀測,而是 Open-Meteo 整理的分析資料(各模式最短時效的預報接起來),它本身也有誤差。樣本只有幾天,"
+               "只能看出明顯的系統性偏差,例如某個地點的低溫連續幾天都報太高。時效越遠誤差越大是正常的。", "這個校驗的限制")
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 地點
+# --------------------------------------------------------------------------- #
+
+def load_previous(path: Path | None) -> dict[str, list[dict]]:
+    """讀取上一次發布的 data.json,回傳 {地名: 先前各次執行的摘要}。讀不到就當作沒有。
+
+    舊版的 data.json 沒有 runs,就用它當時的逐日預報湊出一筆,第一次也能比較。
+    """
+    if path is None:
+        return {}
+    try:
+        old = json.loads(Path(path).read_text(encoding="utf-8"))
+        if isinstance(old.get("runs"), dict):
+            return {name: [r for r in rows if isinstance(r, dict)] for name, rows in old["runs"].items() if isinstance(rows, list)}
+        return {
+            name: [{"at": old["generated"], "days": {d["day"]: {"tmax": d["tmax"]["p50"], "tmin": d["tmin"]["p50"], "pop": d["pop"]} for d in place["days"]}}]
+            for name, place in old["places"].items()
+        }
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def build_place(
+    name: str,
+    raw: dict,
+    upper_raw: dict | None,
+    days: int = 7,
+    period_raw: dict | None = None,
+    previous_runs: list[dict] | None = None,
+    now: datetime | None = None,
+    observed_raw: dict | None = None,
+) -> tuple[str, dict]:
+    """由原始資料產生一個地點的 HTML 區塊與 JSON 資料。
+
+    previous_runs 是這個地點先前各次執行的摘要(None 表示這個地點不保存紀錄,例如用搜尋
+    查的地點);JSON 資料的 runs 是加上這一次之後的結果。observed_raw 是過去幾天的實際
+    狀況,校驗用。
+    """
+    now = now or datetime.now(timezone.utc)
+    ens = analysis.parse(raw)
+    forecast = analysis.daily_forecast(ens, days)
+    if not forecast:
+        raise ValueError("沒有可用的預報日")
+    signal_list = analysis.signals(ens, days)
+    upper_days = None
+    if upper_raw:
+        try:
+            upper_days = upper.analyse(upper_raw, ens.meta.get("latitude") or 0.0, days)
+        except (KeyError, IndexError, TypeError, ValueError):
+            upper_days = None
+    period_list = None
+    if period_raw:
+        try:
+            period_list = periods.period_forecast(period_raw, days)
+        except (KeyError, IndexError, TypeError, ValueError):
+            period_list = None
+    lat, lon = ens.meta.get("latitude") or 0.0, ens.meta.get("longitude") or 0.0
+    brief = briefing.build(forecast, signal_list, analysis.patterns(ens), upper_days, lat, lon)
+    comparison = history.compare_runs(previous_runs or [], forecast, now)
+    checked = None
+    if observed_raw and previous_runs:
+        try:
+            checked = verify.verify(previous_runs, verify.parse_observed(observed_raw, forecast[0].day))
+        except (KeyError, TypeError, ValueError):
+            checked = None
+
+    views = {
+        "summary": _summary_view(forecast, brief, comparison),
+        "daily": _daily_view(forecast, brief, period_list),
+        "synoptic": _synoptic_view(forecast, brief, upper_days, signal_list, lat < 0),
+        "models": _models_view(forecast, brief, ens, comparison),
+        "risk": _risk_view(forecast, brief),
+        "verify": _verify_view(checked, previous_runs is not None),
+    }
+    total = sum(ens.member_count(s) for s in ens.systems)
+    block = (
+        f'<p class="sub">{abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"},{total} 個系集成員,'
+        f"{_day(forecast[0].day)} 到 {_day(forecast[-1].day)}</p>"
+        f'<p class="lede">{esc(brief.lede)}</p>'
+        + _ribbon(forecast, brief)
+        + '<div class="tabs" role="tablist">'
+        + "".join(f'<button role="tab" data-tab="{key}">{title}</button>' for key, title in TABS)
+        + "</div>"
+        + "".join(f'<section class="view" data-view="{key}">{views[key]}</section>' for key, _ in TABS)
+    )
+    data = report.to_json(name, ens, forecast, signal_list, comparison, upper_days, period_list)
+    data["briefing"] = asdict(brief)
+    data["verification"] = asdict(checked) if checked else None
+    data["runs"] = history.extend(previous_runs or [], forecast, now, KEEP_RUNS)
+    return block, data
+
+
+# --------------------------------------------------------------------------- #
+# 整頁
+# --------------------------------------------------------------------------- #
+
 SEARCH_HTML = """<form id="find" role="search"><input id="q" type="search" autocomplete="off"
-placeholder="搜尋其他地點,例如 恆春、Tokyo 或 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
+placeholder="查其他地點:恆春、Tokyo 或 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
 <span id="fmsg"></span><div id="hits"></div></form>"""
 
-NOTES_HTML = """<section id="notes"><h2>注意事項</h2><div class="card"><ul>
-<li><b>這不是官方預報。</b>颱風、豪雨、寒流等災害性天氣,請以中央氣象署的警特報為準。</li>
-<li><b>越後面的日子越不準。</b>每天的「信心」是依各模式是否一致算出來的經驗分數,不是命中率;信心低代表模式之間看法分歧。</li>
-<li><b>時段預報比整天的預報更容易錯開。</b>鋒面晚到半天,整天的預報仍然對,上午、下午卻會整個對調。三天以後的時段只當參考。</li>
-<li><b>降雨機率高不代表雨大。</b>請一起看雨量,以及「高空對地面的影響」裡是否寫著淺層降雨。</li>
-<li><b>解析度約 25 公里。</b>相鄰鄉鎮的結果會很接近;落山風、山區午後雷陣雨、海陸風這類局部現象,模式解析不出來。</li>
-<li><b>氣溫沒有用測站觀測校正。</b>山區與海邊的誤差會比平地大。</li>
-<li><b>接下來 1–3 小時會不會下雨,請看上方的即時雷達回波</b>,它比預報準;雷達圖來自外部服務,偶爾可能載入不到。</li>
-<li><b>預設城市每 6 小時更新一次</b>(約台灣時間 03、09、15、21 時之後),有時會延後幾十分鐘。</li>
-<li><b>用搜尋欄查的地點不會自動更新</b>,每次點開分頁時才重新計算,第一次約需 10–20 秒。</li>
-</ul></div></section>"""
-
-RADAR_HTML = """<section id="radar"><h2>即時雷達回波</h2><div class="card">
+RADAR_HTML = """<section class="page" data-page="radar" id="radar"><h1>即時雷達回波</h1>
+<p class="lede">接下來一到三小時會不會下雨,看雷達比看預報準。</p>
 <div class="bar"><button data-src="rv" aria-pressed="true">全球合成</button><button data-src="jma">日本氣象廳</button>
 <button data-src="cwa">中央氣象署</button><button id="rplay">暫停</button><span id="rtime"></span></div>
 <div id="map"></div><img id="cwa" alt="中央氣象署雷達合成回波圖">
-<p class="sub" id="rnote">最近約 2 小時的回波動畫,每 5 分鐘自動更新。雷達只能看出現在雨在哪裡、往哪裡移動,適合判斷未來 1–3 小時;更久之後請看上面的預報。</p>
+<p class="sub" id="rnote">最近約 2 小時的回波動畫,每 5 分鐘自動更新。雷達只能看出現在雨在哪裡、往哪裡移動;更久之後請看預報。地圖中心是「地點預報」裡目前選的地點。</p>
 <p class="sub">來源:全球合成為 <a href="https://www.rainviewer.com/">RainViewer</a>(彙整各國氣象單位的雷達);
 <a href="https://www.jma.go.jp/bosai/nowc/">日本氣象廳</a>降水即時預報(涵蓋日本周邊,台灣只到東北部外海);
-<a href="https://www.cwa.gov.tw/V8/C/W/OBS_Radar.html">中央氣象署</a>雷達合成回波圖。底圖 © OpenStreetMap。</p></div></section>"""
+<a href="https://www.cwa.gov.tw/V8/C/W/OBS_Radar.html">中央氣象署</a>雷達合成回波圖。底圖 © OpenStreetMap。</p></section>"""
+
+GLOSSARY = (
+    ("hPa 與層次", "氣壓的單位。925、850、700、500、250 hPa 大約是 0.8、1.5、3、5.5、10.5 公里高。", "綜觀分析"),
+    ("槽、脊", "高空氣流像波浪。往赤道凹下去的是槽,氣流不穩定;往極地凸出去的是脊,氣流下沉、穩定。", "綜觀分析的 500 hPa"),
+    ("槽前、槽後", "槽線的東邊是槽前,吹偏南風、空氣上升,容易下雨;西邊是槽後,吹偏北風、空氣下沉。", "逐日高空分析"),
+    ("副熱帶高壓、588 線", "太平洋上的暖高壓。500 hPa 高度 5880 m 的等高線常用來標示它的範圍,在線內通常穩定、偏熱。", "綜觀分析"),
+    ("鋒面", "冷暖空氣的交界。通過時低層風向會突然轉變,本站用 925 hPa 風向在 12 小時內轉 80° 以上來判斷。", "時間軸、綜觀分析"),
+    ("東北季風", "冬半年大陸冷高壓南下時,臺灣附近低層吹的東北風。迎風的北部、東半部多雲有雨,背風的中南部通常乾。", "主要影響系統"),
+    ("噴流", "高空一條風速特別強的窄帶(本站以 250 hPa 風速 30 m/s 以上為準)。它的位置代表冷暖空氣交界在哪裡。", "綜觀分析的 250 hPa"),
+    ("輻散、輻合", "高層空氣流出去叫輻散,會帶動下方空氣上升;流進來叫輻合,不利上升。", "逐日高空分析"),
+    ("暖平流、冷平流", "風把較暖(或較冷)的空氣吹過來。暖平流增溫並有利上升,冷平流降溫、空氣下沉。", "綜觀分析的 850 hPa"),
+    ("可降水量 PWAT", "把整層大氣的水氣全部凝結下來有多少毫米。數值越大,有雨時雨勢可能越大。", "逐日高空分析"),
+    ("K 指數", "用 850、700、500 hPa 的溫度與濕度估計大氣穩不穩定。30 以上容易有雷雨。", "逐日高空分析"),
+    ("CAPE", "對流可用位能,空氣塊上升時能得到多少能量。1000 J/kg 以上視為不穩定。", "逐日高空分析"),
+    ("垂直結構檢查", "看低層的舉升與高層的輻散有沒有配合。配合才有大範圍的雨;只有低層,多半是迎風面的淺層降雨。", "各時段的預報理由"),
+    ("決定性預報", "模式只算一次的預報。它只是一種可能的情境,不能當機率用。", "說明"),
+    ("系集預報", "把初始條件稍微改一點,讓同一個模式算幾十次;每一次叫一個成員。成員散得越開,越沒把握。", "模式與系集"),
+    ("降雨機率", "本站指日雨量達 1 mm 的成員比例。機率高不代表雨大,要一起看雨量。", "時間軸、逐日預報"),
+    ("信心度", "依成員是否集中、各模式是否一致算出的經驗分數,分成高、中高、中、中低、低。不是命中率。", "時間軸、不確定性"),
+    ("前後報", "同一天的預報,這一次和前幾次比。連續往同方向修正較可信;穩定不等於準確。", "模式與系集的預報趨勢"),
+    ("分析場", "模式把各種觀測整合出來的「現在的大氣狀態」。它很接近實際,但不等於觀測。", "校驗"),
+    ("漏報、空報", "沒報下雨卻下了是漏報;報了下雨卻沒下是空報。", "校驗"),
+)
+
+ABOUT_HTML = (
+    '<section class="page" data-page="about" id="about"><h1>說明</h1>'
+    '<p class="lede">這個網站把課堂上做一週天氣預報報告的流程,交給程式每 6 小時做一次。</p>'
+    "<h2>怎麼閱讀</h2><ul>"
+    "<li><b>總覽</b>先講結論:這一週分成哪幾段、各由什麼天氣系統主導,以及所有地點的逐日預報表。</li>"
+    "<li><b>地點預報</b>最上面是一週的時間軸,下面有六個分頁,順序和預報報告的章節相同:"
+    "摘要、逐日與時段、綜觀分析、模式與系集、不確定性、校驗。</li>"
+    "<li><b>即時雷達</b>回答「接下來幾小時會不會下雨」,這件事雷達比預報準。</li>"
+    "<li>有顏色的地方都有固定的意思:綠色是降雨,紅色是高溫與暖空氣,藍色是低溫與冷空氣。這是手繪天氣圖的習慣。</li></ul>"
+    "<h2>分析流程</h2><ul>"
+    "<li><b>先講結論。</b>把一週依主要影響系統分成最多三個時段,每段給信心度與理由。</li>"
+    "<li><b>層次由上而下再回到地面。</b>先看 500 hPa 的槽脊,再看 850 與 925 hPa 的溫度、風與鋒面,最後看 250 hPa 的噴流與高層輻散,"
+    "並檢查高低層有沒有配合。</li>"
+    "<li><b>時效越遠看得越粗。</b>第 5 到 7 天只看趨勢,第 3 到 5 天看系統的強度與範圍,前 3 天才看一天之內的時段。</li>"
+    "<li><b>不確定性用三種方式檢查。</b>比較不同模式、比較同一天的前後幾次預報、看系集成員散得多開。</li>"
+    "<li><b>事後校驗。</b>過去的每一次預報都留著,那一天過去後和實際狀況比較。</li></ul>"
+    "<h2>資料與模式的角色</h2>"
+    + _table(
+        [
+            ["資料", "來源", "用途"],
+            ["ECMWF IFS 系集(51 個成員)", "Open-Meteo Ensemble API", "傳統數值模式。地面預報、高空各層、可降水量與 CAPE"],
+            ["ECMWF AIFS 系集(51 個成員)", "Open-Meteo Ensemble API", "AI 模式。地面預報與高空各層;系統的位置與時間通常較準,強度偏弱"],
+            ["NCEP GEFS(31 個成員)", "Open-Meteo Ensemble API", "另一個中心的看法,用來檢查前兩者;只有地面預報"],
+            ["過去幾天的分析資料", "Open-Meteo Forecast API", "校驗:和先前的預報比較"],
+            ["雷達回波", "RainViewer、日本氣象廳、中央氣象署", "只在瀏覽器裡即時顯示,不進入預報計算"],
+        ]
+    )
+    + "<h2>名詞解釋</h2>"
+    + _table([["名詞", "簡單解釋", "在本站哪裡看到"], *([a, b, c] for a, b, c in GLOSSARY)])
+    + '<section id="notes"><h2>注意事項</h2><ul>'
+    "<li><b>這不是官方預報。</b>颱風、豪雨、寒流等災害性天氣,請以中央氣象署的警特報為準。</li>"
+    "<li><b>程式的判斷是推論。</b>「鋒面通過」「東北季風」這些名稱是從單一地點上空的數值推出來的,沒有看天氣圖,請對照實際的天氣圖。</li>"
+    "<li><b>越後面的日子越不準。</b>信心度低代表模式之間看法分歧。</li>"
+    "<li><b>降雨機率高不代表雨大。</b>請一起看雨量,以及綜觀分析裡是否寫著淺層降雨。</li>"
+    "<li><b>解析度約 25 公里。</b>相鄰鄉鎮的結果會很接近;落山風、山區午後雷陣雨、海陸風這類局部現象,模式解析不出來。</li>"
+    "<li><b>氣溫沒有用測站觀測校正。</b>山區與海邊的誤差會比平地大。</li>"
+    "<li><b>預設地點每 6 小時更新一次</b>(約臺灣時間 03、09、15、21 時之後),有時會延後幾十分鐘。開著的頁面每 10 分鐘檢查一次,有新預報會自動重新載入。</li>"
+    "<li><b>用搜尋欄查的地點不會自動更新</b>,每次點開才重新計算,第一次約需 10–20 秒,也沒有預報趨勢與校驗。</li>"
+    "</ul></section>"
+    "<h2>相關連結</h2><ul>"
+    f'<li><a href="{TYPHOON_URL}">Pillar 熱帶氣旋預報</a>:颱風路徑、侵襲機率與各模式的校驗。</li>'
+    '<li><a href="https://www.cwa.gov.tw/V8/C/W/analysis.html">中央氣象署天氣圖</a>、'
+    '<a href="https://www.cwa.gov.tw/V8/C/P/Typhoon/TY_NEWS.html">颱風消息</a>、'
+    '<a href="https://www.cwa.gov.tw/V8/C/W/week.html">一週預報</a>。</li>'
+    '<li><a href="https://www.tropicaltidbits.com/analysis/models/">Tropical Tidbits</a>:各模式的天氣圖。</li>'
+    f'<li><a href="data.json">data.json</a>:這一頁所有數字的原始資料。<a href="{REPO_URL}">原始碼與方法筆記</a>。</li>'
+    "</ul></section>"
+)
 
 RADAR_JS = """
 (function(){
@@ -282,11 +794,12 @@ const el=document.getElementById('map'),img=document.getElementById('cwa'),label
 note=document.getElementById('rnote'),play=document.getElementById('rplay');
 if(!el)return;
 if(!window.L){el.textContent='地圖元件載入失敗';return}
-const here=()=>{const s=document.querySelector('section.place.on');return [+s.dataset.lat,+s.dataset.lon]};
+const here=()=>{const s=document.querySelector('article.place.on')||document.querySelector('article.place');return [+s.dataset.lat,+s.dataset.lon]};
 const map=L.map(el,{scrollWheelZoom:false}).setView(here(),7);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:10,attribution:'&copy; OpenStreetMap'}).addTo(map);
 const pin=L.circleMarker(here(),{radius:6,weight:2,color:'#0b0b0b',fillColor:'#fff',fillOpacity:1}).addTo(map);
 window.radarMove=()=>{map.setView(here(),map.getZoom());pin.setLatLng(here())};
+window.radarShow=()=>{map.invalidateSize();radarMove()};
 let src='rv',frames=[],layers=[],at=0,running=true,timer=null;
 const sources={
  rv:async()=>{const d=await(await fetch('https://api.rainviewer.com/public/weather-maps.json')).json();
@@ -317,131 +830,91 @@ load();setInterval(load,3e5);
 """
 
 
-def load_previous(path: Path | None) -> dict[str, list[dict]]:
-    """讀取上一次發布的 data.json,回傳 {地名: 先前各次執行的摘要}。讀不到就當作沒有。
-
-    舊版的 data.json 沒有 runs,就用它當時的逐日預報湊出一筆,第一次也能比較。
-    """
-    if path is None:
-        return {}
-    try:
-        old = json.loads(Path(path).read_text(encoding="utf-8"))
-        if isinstance(old.get("runs"), dict):
-            return {name: [r for r in rows if isinstance(r, dict)] for name, rows in old["runs"].items() if isinstance(rows, list)}
-        return {
-            name: [{"at": old["generated"], "days": {d["day"]: {"tmax": d["tmax"]["p50"], "tmin": d["tmin"]["p50"], "pop": d["pop"]} for d in place["days"]}}]
-            for name, place in old["places"].items()
-        }
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return {}
-
-
-def build_place(
-    name: str,
-    raw: dict,
-    upper_raw: dict | None,
-    days: int = 7,
-    period_raw: dict | None = None,
-    previous_runs: list[dict] | None = None,
-    now: datetime | None = None,
-) -> tuple[str, dict]:
-    """由原始資料產生一個地點的 HTML 區塊與 JSON 資料。
-
-    previous_runs 是這個地點先前各次執行的摘要;JSON 資料的 runs 是加上這一次之後的結果。
-    """
-    now = now or datetime.now(timezone.utc)
-    ens = analysis.parse(raw)
-    forecast = analysis.daily_forecast(ens, days)
-    if not forecast:
-        raise ValueError("沒有可用的預報日")
-    signal_list = analysis.signals(ens, days)
-    upper_days = None
-    if upper_raw:
-        try:
-            upper_days = upper.analyse(upper_raw, ens.meta.get("latitude") or 0.0, days)
-        except (KeyError, IndexError, TypeError, ValueError):
-            upper_days = None
-    period_list = None
-    if period_raw:
-        try:
-            period_list = periods.period_forecast(period_raw, days)
-        except (KeyError, IndexError, TypeError, ValueError):
-            period_list = None
-    lat, lon = ens.meta.get("latitude") or 0.0, ens.meta.get("longitude") or 0.0
-    counts = " + ".join(f"{s} {ens.member_count(s)}" for s in ens.systems)
-    cards = "".join(
-        f'<div class="day"><b>{esc(report._label(f.day))}</b><div class="sky">{esc(f.sky)}</div>'
-        f'<div class="t">{f.tmax.p50:.0f}° <small>/ {f.tmin.p50:.0f}°</small></div>'
-        f'<div class="p">降雨 {f.pop:.0%}</div><span class="conf {f.confidence_label}">信心{f.confidence_label}</span></div>'
-        for f in forecast
+def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
+    """總覽頁:一句話的結論、所有地點的逐日預報表、各地的注意事項。"""
+    if not payloads or not all(n in payloads and payloads[n].get("briefing") for n in names):
+        links = "".join(f'<li><a href="#/place/{i}/summary">{esc(n)}</a></li>' for i, n in enumerate(names))
+        return f'<h1>一週天氣預報</h1><ul>{links}</ul>'
+    stages = briefing.outline([payloads[n]["briefing"]["roles"] for n in names])
+    systems = {day: system for stage in stages for day, system in stage["systems"].items()}
+    if len(stages) > 1:
+        lede = f"這一週分成 {len(stages)} 段:" + ";".join(f"{briefing._span(s['days'])} {s['headline']}" for s in stages) + "。"
+    else:
+        lede = f"這一週:{stages[0]['headline']}。"
+    head = "<th>日期</th><th>主要影響系統</th>" + "".join(f'<th><a href="#/place/{i}/summary">{esc(n)}</a></th>' for i, n in enumerate(names))
+    by_place = {n: {d["day"]: d for d in payloads[n]["days"]} for n in names}
+    body = ""
+    for day in sorted(systems):
+        cells = ""
+        for n in names:
+            d = by_place[n].get(day)
+            cells += (
+                f'<td><span class="wx">{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small></td>'
+                if d else "<td>–</td>"
+            )
+        body += f"<tr><th>{esc(_day(day))}</th><td>{esc(systems[day])}</td>{cells}</tr>"
+    table = (
+        f'<div class="scroll"><table class="zone"><caption>氣溫為最低–最高,°C;括號內是降雨機率。點地名看那個地點的完整分析。</caption>'
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
     )
-    parts = [
-        f'<p class="sub">{abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"} · '
-        f"{esc(counts)} = {sum(ens.member_count(s) for s in ens.systems)} 個系集成員</p>",
-        f'<div class="days">{cards}</div>',
-        (
-            '<h2>時段預報</h2><div class="card"><p class="sub">每格是該時段的氣溫、天氣與 6 小時內降雨機率,'
-            "底部橫條越長降雨機率越高;越後面的日子,時段的可信度越低</p>" + _period_grid(period_list) + "</div>"
-        )
-        if period_list
-        else "",
-        "<h2>重點</h2>" + _list(report.highlights(forecast)),
-        '<h2>氣溫</h2><div class="card"><p class="sub">深色:低溫到高溫的中位數;淺色:10–90% 的可能範圍(°C)</p>'
-        + _temperature_chart(forecast) + "</div>",
-        '<h2>降雨機率</h2><div class="card"><p class="sub">日雨量達 1 mm 的系集成員比例</p>' + _rain_chart(forecast) + "</div>",
-        '<h2>逐日預報</h2><div class="card">' + _table(_surface_rows(forecast)) + "</div>",
-    ]
-    if upper_days:
-        parts += [
-            "<h2>高空對地面的影響</h2>" + _list(report.upper_impact(upper_days, forecast, lat < 0)),
-            '<h2>高空分析</h2><div class="card"><p class="sub">ECMWF 與 AIFS 系集中位數;風速 m/s,輻散 10⁻⁵/s,平流 °C/日,'
-            "PWAT(可降水量)mm,CAPE J/kg;925 風的「西→東北」表示當天低層風向轉變(鋒面通過)</p>"
-            + _table(report.upper_rows(upper_days)) + "</div>",
-        ]
-    if signal_list:
-        by_day: dict[str, list[str]] = {}
-        for s in signal_list:
-            by_day.setdefault(s.day, []).append(s.text)
-        parts.append("<h2>天氣型態變化</h2>" + _list([f"{report._label(d)}:" + ";".join(t) + "。" for d, t in by_day.items()]))
-    notes = report.uncertainty(forecast)
-    if notes:
-        parts.append("<h2>不確定性</h2>" + _list(notes))
-    comparison = history.compare_runs(previous_runs or [], forecast, now)
-    if comparison:
-        parts.append(
-            f"<h2>預報趨勢</h2><p class=\"sub\">與 {comparison.age_hours:.0f} 小時前的預報比較;"
-            "連續幾次往同方向修正的趨勢較可信,來回擺盪代表模式還沒有定論</p>" + _list(report.comparison_lines(comparison))
-        )
-    data = report.to_json(name, ens, forecast, signal_list, comparison, upper_days, period_list)
-    data["runs"] = history.extend(previous_runs or [], forecast, now, KEEP_RUNS)
-    return "".join(parts), data
+    merged: dict[tuple[str, str], list[str]] = {}
+    for n in names:
+        for hazard, when, _ in payloads[n]["briefing"]["hazards"]:
+            merged.setdefault((hazard, when), []).append(n)
+    if merged:
+        hazards = _table([["危害", "時間", "地點"], *([h, w, "、".join(p)] for (h, w), p in merged.items())])
+    else:
+        hazards = '<p class="sub">各地這一週都沒有大雨、強風或明顯降溫的訊號。</p>'
+    return (
+        f'<h1>這一週的天氣</h1><p class="lede">{esc(lede)}</p>'
+        f"<h2>逐日分區預報</h2>{table}"
+        f"<h2>注意事項與劇烈天氣</h2>{hazards}"
+        '<p class="sub">主要影響系統取最多地點的判斷;各地點自己的分段、預報理由與信心度在<a href="#/place">地點預報</a>。'
+        '接下來幾小時的雨看<a href="#/radar">即時雷達</a>。</p>'
+    )
 
 
-def build_page(sections: list[tuple], generated: datetime, failed: list[str]) -> str:
-    """sections 的每一項是 (地名, HTML 區塊) 或 (地名, HTML 區塊, 緯度, 經度);有座標才會附雷達圖。"""
+def build_page(sections: list[tuple], generated: datetime, failed: list[str], payloads: dict[str, dict] | None = None) -> str:
+    """sections 的每一項是 (地名, HTML 區塊) 或 (地名, HTML 區塊, 緯度, 經度);有座標才會附雷達圖。
+
+    payloads 是 {地名: build_place 回傳的資料},用來組總覽頁;沒有的話總覽只列出地點。
+    """
     sections = [(s[0], s[1], *(s[2:4] if len(s) >= 4 else (None, None))) for s in sections]
     radar = all(lat is not None for _, _, lat, _ in sections)
     stamp = generated.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     iso = generated.astimezone(timezone.utc).isoformat()
-    tabs = "".join(f'<button role="tab">{esc(s[0])}</button>' for s in sections)
-    body = "".join(
-        f'<section class="place"' + (f' data-lat="{lat}" data-lon="{lon}"' if radar else "") + f"><h1>{esc(name)} 一週天氣預報</h1>{block}</section>"
+    names = [s[0] for s in sections]
+    chips = "".join(f'<button role="tab">{esc(n)}</button>' for n in names)
+    places = "".join(
+        f'<article class="place" data-name="{esc(name)}"' + (f' data-lat="{lat}" data-lon="{lon}"' if radar else "")
+        + f"><h1>{esc(name)}</h1>{block}</article>"
         for name, block, lat, lon in sections
     )
+    nav = "".join(
+        f'<a data-page="{key}" href="#/{key}">{title}</a>'
+        for key, title in (("overview", "總覽"), ("place", "地點預報"), ("radar", "即時雷達"), ("about", "說明"))
+        if radar or key != "radar"
+    )
     leaflet = "https://unpkg.com/leaflet@1.9.4/dist/leaflet"
-    missing = f'<p class="sub">本次未能更新:{esc("、".join(failed))}</p>' if failed else ""
+    missing = f'<p class="sub">這次沒能更新:{esc("、".join(failed))}。</p>' if failed else ""
+    script = JS.replace("__TABS__", json.dumps([key for key, _ in TABS]))
     return (
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'
+        '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+        f'<link rel="stylesheet" href="{FONTS}">'
         + (f'<link rel="stylesheet" href="{leaflet}.css">' if radar else "")
-        + f"<style>{CSS}</style></head><body><main>"
-        f'<nav role="tablist">{tabs}</nav>{SEARCH_HTML}<p class="sub" id="fresh" data-generated="{iso}">資料更新時間 {stamp}</p>{body}{RADAR_HTML if radar else ""}{NOTES_HTML}{missing}'
-        f'<footer>資料:Open-Meteo Ensemble API(ECMWF、GEFS、AIFS)· '
-        "數值為系集中位數;信心與高空研判是經驗法則,不是官方預報,颱風與災害天氣請以中央氣象署為準 · "
-        f'<a href="data.json">data.json</a> · <a href="{REPO_URL}">原始碼與說明</a></footer>'
+        + f"<style>{CSS}</style><script>document.documentElement.classList.add('js')</script></head><body>"
+        f'<header class="top"><div class="in"><a class="brand" href="#/overview">一週天氣預報</a><nav class="nav" aria-label="主要頁面">{nav}</nav>'
+        f'<p class="sub" id="fresh" data-generated="{iso}">更新於 {stamp}</p></div></header><main>'
+        f'<section class="page on" data-page="overview">{_overview(names, payloads)}{missing}</section>'
+        f'<section class="page" data-page="place"><div id="places" role="tablist" aria-label="地點">{chips}</div>{SEARCH_HTML}{places}</section>'
+        f'{RADAR_HTML if radar else ""}{ABOUT_HTML}'
+        "<footer>資料來自 Open-Meteo(ECMWF、AIFS、GEFS 系集)。數值是系集中位數;影響系統、信心度與高空研判是程式依經驗法則做的推論,"
+        "不是官方預報。颱風與災害性天氣請以中央氣象署為準。</footer>"
         '</main><div id="tip"></div>'
         + (f'<script src="{leaflet}.js"></script>' if radar else "")
-        + f"<script>{JS}{RADAR_JS if radar else ''}</script></body></html>"
+        + f"<script>{script}{RADAR_JS if radar else ''}</script></body></html>"
     )
 
 
@@ -459,7 +932,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("_site"), help="輸出資料夾")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--from-file", metavar="PATH", help="改讀存下的原始資料(只產生一個地點,不連網)")
-    parser.add_argument("--previous", metavar="PATH", type=Path, help="上一次發布的 data.json,用來比較預報趨勢")
+    parser.add_argument("--previous", metavar="PATH", type=Path, help="上一次發布的 data.json,用來比較預報趨勢與校驗")
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
@@ -467,24 +940,32 @@ def main(argv: list[str] | None = None) -> int:
     sections, data, runs, failed = [], {}, {}, []
     for name in args.places[:1] if args.from_file else args.places:
         try:
+            observed_raw = None
             if args.from_file:
                 bundle = client.load_raw(args.from_file)
                 raw, upper_raw = client.split_bundle(bundle)
                 period_raw = bundle.get("periods")
+                observed_raw = bundle.get("observed")
             else:
                 place = client.geocode(name)
                 raw = client.fetch_ensemble(place.latitude, place.longitude, args.days)
+                zone = raw.get("timezone") or "GMT"
                 try:
-                    upper_raw = client.fetch_upper(place.latitude, place.longitude, args.days, raw.get("timezone") or "GMT")
+                    upper_raw = client.fetch_upper(place.latitude, place.longitude, args.days, zone)
                 except client.FetchError as err:
                     print(f"{name}:沒有高空資料({err})", file=sys.stderr)
                     upper_raw = None
                 try:
-                    period_raw = client.fetch_periods(place.latitude, place.longitude, args.days, raw.get("timezone") or "GMT")
+                    period_raw = client.fetch_periods(place.latitude, place.longitude, args.days, zone)
                 except client.FetchError as err:
                     print(f"{name}:沒有時段資料({err})", file=sys.stderr)
                     period_raw = None
-            block, payload = build_place(name, raw, upper_raw, args.days, period_raw, previous.get(name), now)
+                if previous.get(name):  # 有先前的預報才需要實際狀況來校驗
+                    try:
+                        observed_raw = client.fetch_observed(place.latitude, place.longitude, zone)
+                    except client.FetchError as err:
+                        print(f"{name}:沒有校驗用的資料({err})", file=sys.stderr)
+            block, payload = build_place(name, raw, upper_raw, args.days, period_raw, previous.get(name, []), now, observed_raw)
         except (client.FetchError, ValueError, OSError) as err:
             print(f"{name}:略過({err})", file=sys.stderr)
             failed.append(name)
@@ -498,7 +979,7 @@ def main(argv: list[str] | None = None) -> int:
         print("沒有任何地點成功,不產生網頁", file=sys.stderr)
         return 1
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "index.html").write_text(build_page(sections, now, failed), encoding="utf-8")
+    (args.out / "index.html").write_text(build_page(sections, now, failed, data), encoding="utf-8")
     write_engine(args.out / "weekcast.zip")
     (args.out / "data.json").write_text(
         json.dumps({"generated": now.isoformat(), "places": data, "runs": runs}, ensure_ascii=False), encoding="utf-8"
