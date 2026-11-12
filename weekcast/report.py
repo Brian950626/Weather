@@ -8,6 +8,7 @@ from datetime import date
 
 from .analysis import DayForecast, Ensemble, Signal
 from .history import Comparison
+from . import plain
 from .periods import PERIODS, PeriodForecast, by_day
 from .upper import UpperDay, compass, trough_passage
 
@@ -301,6 +302,10 @@ def render(
     if notes:
         lines += ["", "不確定性"]
         lines += [f"• {n}" for n in notes]
+    lines += ["", "白話總結:這一週的天氣、原因與影響", plain.overview(forecast, upper_days), ""]
+    lines += [f"• {d.text()}" for d in plain.plain_days(forecast, upper_days, period_list, lat < 0)]
+    if upper_days:
+        lines += ["", "名詞對照"] + [f"• {term}:{meaning}" for term, meaning in plain.GLOSSARY]
     if comparison:
         moved = [c for c in comparison.changes if abs(c.tmax) >= 1 or abs(c.pop) >= 0.15]
         lines += ["", f"與 {comparison.age_hours:.0f} 小時前的預報比較"]
@@ -339,6 +344,13 @@ def to_json(place_name, ens, forecast, signal_list, comparison=None, upper_days=
         "signals": [asdict(s) for s in signal_list],
         "highlights": highlights(forecast),
         "uncertainty": uncertainty(forecast),
+        "plain": {
+            "overview": plain.overview(forecast, upper_days),
+            "days": [
+                asdict(d) | {"text": d.text()}
+                for d in plain.plain_days(forecast, upper_days, period_list, (ens.meta.get("latitude") or 0.0) < 0)
+            ],
+        },
         "upper": None
         if not upper_days
         else {

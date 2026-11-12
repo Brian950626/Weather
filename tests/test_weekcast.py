@@ -690,5 +690,75 @@ class BrowserSearchTest(unittest.TestCase):
             self.assertIn(f"weekcast/{module}.py", names)
 
 
+class PlainSummaryTest(unittest.TestCase):
+    """給非專業讀者的白話總結。"""
+
+    JARGON = ("槽", "脊線", "輻散", "輻合", "平流", "hPa", "噴流", "K 指數")
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import periods, plain
+
+        cls.plain = plain
+        cls.forecast = analysis.daily_forecast(load_surface(), 7)
+        cls.upper = upper.analyse(load_upper(), 25.0, 7)
+        cls.periods = periods.period_forecast(client.load_raw(FIXTURE)["periods"], 7)
+        cls.days = plain.plain_days(cls.forecast, cls.upper, cls.periods)
+
+    def test_one_entry_per_day_without_jargon(self):
+        self.assertEqual([d.day for d in self.days], [f.day for f in self.forecast])
+        text = self.plain.overview(self.forecast, self.upper) + "".join(d.text() for d in self.days)
+        for word in self.JARGON:
+            self.assertNotIn(word, text)
+
+    def test_rainy_day_says_when_and_what_to_bring(self):
+        saturday = next(d for d in self.days if d.day == "2026-11-14")
+        self.assertIn("可能會下雨", saturday.weather)
+        self.assertIn("主要在晚上", saturday.weather)
+        self.assertIn("帶把傘備用", saturday.advice)
+        self.assertIn("低壓帶從西邊靠近", saturday.why)
+        self.assertIn("看法不一致", saturday.caution)
+
+    def test_shallow_rain_is_explained_as_light(self):
+        sunday = next(d for d in self.days if d.day == "2026-11-15")
+        self.assertIn("雨量不大", sunday.weather)
+        self.assertIn("雲長不高", sunday.why)
+        self.assertEqual(sunday.advice, ["出門帶傘"])
+
+    def test_cooling_day_gets_a_jacket(self):
+        last = next(d for d in self.days if d.day == "2026-11-18")
+        self.assertIn("比前一天涼", last.weather)
+        self.assertIn("明顯變涼,加件外套", last.advice)
+        self.assertIn("高空其實是穩定的", last.why)  # 高空穩定卻下雨,要解釋清楚
+
+    def test_works_without_upper_air_or_periods(self):
+        days = self.plain.plain_days(self.forecast)
+        self.assertEqual(len(days), 7)
+        self.assertTrue(all(d.why == "" for d in days))
+        self.assertTrue(self.plain.overview(self.forecast, None))
+
+    def test_dry_sunny_day_advice(self):
+        fc = self.forecast[1]
+        clear = analysis.DayForecast(**{**fc.__dict__, "pop": 0.02, "cloud": analysis.Spread(10, 20, 30)})
+        self.assertIn("適合戶外活動和曬衣服", self.plain._advice(clear, None, None))
+        self.assertIn("天氣晴朗", self.plain._weather(clear, None, None))
+
+    def test_shown_in_report_page_and_json(self):
+        from weekcast import site
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--from-file", FIXTURE])
+        self.assertIn("白話總結", out.getvalue())
+        self.assertIn("名詞對照", out.getvalue())
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+            data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
+        self.assertEqual(page.count('class="pd"'), 7)
+        self.assertLess(page.index("不確定性</h2>"), page.index("白話總結"))  # 放在最後
+        self.assertEqual(len(data["places"]["台北"]["plain"]["days"]), 7)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import analysis, client, periods, report, upper
+from . import analysis, client, periods, plain, report, upper
 
 DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
 REPO_URL = "https://github.com/Brian950626/Weather"
@@ -66,6 +66,11 @@ svg g.hit:hover .bar{opacity:.8}
 #rtime{font-size:13px;color:var(--ink2);margin-left:auto}
 #map{height:440px;border-radius:8px;background:var(--grid)}
 #cwa{display:none;max-width:100%;border-radius:8px}
+.lead{font-size:16px;margin:2px 0 12px}
+.pd{border-top:1px solid var(--grid);padding:10px 0}.pd b{font-size:15px}.pd p{margin:4px 0}
+.pd span{display:inline-block;font-size:12px;font-weight:600;color:var(--ink2);border:1px solid var(--axis);border-radius:4px;padding:0 6px;margin-right:8px}
+details{border-top:1px solid var(--grid);padding-top:10px}summary{cursor:pointer;color:var(--ink2)}
+dt{font-weight:600;margin-top:8px}dd{margin:2px 0 0;color:var(--ink2)}
 footer{color:var(--ink2);font-size:12px;margin-top:32px}a{color:var(--series)}
 """
 
@@ -380,6 +385,22 @@ def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7, per
     notes = report.uncertainty(forecast)
     if notes:
         parts.append("<h2>不確定性</h2>" + _list(notes))
+    days_plain = plain.plain_days(forecast, upper_days, period_list, lat < 0)
+    cards_plain = "".join(
+        f'<div class="pd"><b>{esc(plain._label(d.day))}</b><p>{esc(d.weather)}</p>'
+        + (f'<p><span>為什麼</span>{esc(d.why)}</p>' if d.why else "")
+        + (f'<p><span>怎麼準備</span>{esc("、".join(d.advice))}。</p>' if d.advice else "")
+        + (f'<p class="sub">{esc(d.caution)}</p>' if d.caution else "")
+        + "</div>"
+        for d in days_plain
+    )
+    glossary = "".join(f"<dt>{esc(t)}</dt><dd>{esc(m)}</dd>" for t, m in plain.GLOSSARY)
+    parts.append(
+        '<h2>白話總結:這一週的天氣、原因與影響</h2><div class="card">'
+        f'<p class="lead">{esc(plain.overview(forecast, upper_days))}</p>{cards_plain}'
+        + (f"<details><summary>上面表格裡的名詞是什麼意思</summary><dl>{glossary}</dl></details>" if upper_days else "")
+        + "</div>"
+    )
     data = report.to_json(name, ens, forecast, signal_list, None, upper_days, period_list)
     return "".join(parts), data
 
