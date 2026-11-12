@@ -808,7 +808,7 @@ class SiteTest(unittest.TestCase):
         # 四個頁面都在同一個檔案裡,用網址切換;地點頁有六個分頁
         for name in ("overview", "place", "radar", "about"):
             self.assertEqual(page.count(f'<section class="page{" on" if name == "overview" else ""}" data-page="{name}"'), 1)
-        self.assertEqual(page.count('<section class="view"'), 6)
+        self.assertEqual(page.count('<section class="view"'), len(site.TABS))
         self.assertIn('<a href="#/place/0/summary">台北</a>', page)  # 總覽的表格連到地點頁
         self.assertIn("逐日分區預報", page)
         self.assertEqual(len(data["places"]["台北"]["briefing"]["stages"]), 3)
@@ -1061,6 +1061,117 @@ class BrowserSearchTest(unittest.TestCase):
             names = zipfile.ZipFile(Path(tmp) / "weekcast.zip").namelist()
         for module in ("__init__", "analysis", "browser", "client", "periods", "report", "site", "systems", "upper"):
             self.assertIn(f"weekcast/{module}.py", names)
+
+
+class PlainSummaryTest(unittest.TestCase):
+    """給非專業讀者的白話總結。"""
+
+    JARGON = ("槽", "脊線", "輻散", "輻合", "平流", "hPa", "噴流", "K 指數")
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import periods, plain
+
+        cls.plain = plain
+        cls.forecast = analysis.daily_forecast(load_surface(), 7)
+        cls.upper = upper.analyse(load_upper(), 25.0, 7)
+        cls.periods = periods.period_forecast(client.load_raw(FIXTURE)["periods"], 7)
+        cls.days = plain.plain_days(cls.forecast, cls.upper, cls.periods)
+
+    def test_one_entry_per_day_without_jargon(self):
+        self.assertEqual([d.day for d in self.days], [f.day for f in self.forecast])
+        text = self.plain.overview(self.forecast, self.upper) + "".join(d.text() for d in self.days)
+        for word in self.JARGON:
+            self.assertNotIn(word, text)
+
+    def test_rainy_day_says_when_and_what_to_bring(self):
+        saturday = next(d for d in self.days if d.day == "2026-11-14")
+        self.assertIn("可能會下雨", saturday.weather)
+        self.assertIn("主要在下午和晚上", saturday.weather)
+        self.assertIn("帶把傘備用", saturday.advice)
+        self.assertIn("低壓帶從西邊靠近", saturday.why)
+        self.assertIn("看法不一致", saturday.caution)
+
+    def test_shallow_rain_is_explained_as_light(self):
+        sunday = next(d for d in self.days if d.day == "2026-11-15")
+        self.assertIn("雨量不大", sunday.weather)
+        self.assertIn("雲長不高", sunday.why)
+        self.assertEqual(sunday.advice, ["出門帶傘"])
+
+    def test_cooling_day_gets_a_jacket(self):
+        last = next(d for d in self.days if d.day == "2026-11-18")
+        self.assertIn("比前一天涼", last.weather)
+        self.assertIn("明顯變涼,加件外套", last.advice)
+        self.assertIn("高空其實是穩定的", last.why)  # 高空穩定卻下雨,要解釋清楚
+
+    def test_week_summary_tells_the_story_in_order(self):
+        week = self.plain.week_summary(self.forecast, self.upper)
+        self.assertEqual(week.headline, "未來一週前好後壞:前面幾天穩定,11/14(六)起轉為有雨。")
+        self.assertEqual(len(week.story), 5)  # 穩定 → 可能有雨 → 有雨 → 可能有雨 → 有雨
+        self.assertTrue(week.story[0].startswith("11/12(四)到11/13(五)天氣穩定"))
+        self.assertIn("容易下雨,而且明顯變涼", week.story[-1])
+        self.assertIn("低壓帶接近", week.cause)
+        self.assertEqual(len(week.watch), 2)
+        for word in self.JARGON:
+            self.assertNotIn(word, week.text())
+
+    def test_week_summary_headlines(self):
+        fc = self.forecast[0]
+        day = lambda i, pop: analysis.DayForecast(**{**fc.__dict__, "day": f"2026-01-0{i + 1}", "lead": i, "pop": pop})
+        headline = lambda pops: self.plain.week_summary([day(i, p) for i, p in enumerate(pops)]).headline
+        self.assertIn("幾乎不會下雨", headline([0.0, 0.1, 0.05]))
+        self.assertIn("天天都容易下雨", headline([0.9, 0.8, 0.7]))
+        self.assertIn("前壞後好", headline([0.9, 0.8, 0.1]))
+        self.assertIn("交替", headline([0.9, 0.1, 0.8, 0.1, 0.9]))
+        self.assertIsNone(self.plain.week_summary([]))
+
+    def test_week_summary_leads_the_report_and_the_pages(self):
+        from weekcast import site
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--from-file", FIXTURE])
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[4], "未來一週天氣總結")  # 緊接在標題與資料來源之後
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+            data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
+        self.assertEqual(page.count('class="week"'), 2)  # 總覽頁一塊、地點頁一塊
+        overview_page = page[page.index('data-page="overview"'):]
+        self.assertLess(overview_page.index('class="week"'), overview_page.index("逐日分區預報"))
+        self.assertIn("前好後壞", data["places"]["台北"]["plain"]["week"]["headline"])
+
+    def test_works_without_upper_air_or_periods(self):
+        days = self.plain.plain_days(self.forecast)
+        self.assertEqual(len(days), 7)
+        self.assertTrue(all(d.why == "" for d in days))
+        self.assertTrue(self.plain.overview(self.forecast, None))
+
+    def test_dry_sunny_day_advice(self):
+        fc = self.forecast[1]
+        clear = analysis.DayForecast(**{**fc.__dict__, "pop": 0.02, "cloud": analysis.Spread(10, 20, 30)})
+        self.assertIn("適合戶外活動和曬衣服", self.plain._advice(clear, None, None))
+        self.assertIn("天氣晴朗", self.plain._weather(clear, None, None))
+
+    def test_shown_in_report_page_and_json(self):
+        from weekcast import site
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--from-file", FIXTURE])
+        self.assertIn("白話總結", out.getvalue())
+        self.assertIn("名詞對照", out.getvalue())
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+            data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
+        self.assertEqual(page.count('class="pd"'), 7)
+        # 白話總結是每個地點的最後一個分頁
+        self.assertEqual(site.TABS[-1], ("plain", "白話總結"))
+        self.assertLess(page.index('data-view="verify"'), page.index('data-view="plain"'))
+        self.assertIn("怎麼準備:", page)
+        self.assertEqual(len(data["places"]["台北"]["plain"]["days"]), 7)
 
 
 if __name__ == "__main__":

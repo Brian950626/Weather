@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import date
 
 from .analysis import DayForecast, Ensemble, Signal
+from . import plain
 from .history import Comparison, Trend
 from .periods import PERIODS, PeriodForecast, by_day
 from .upper import PWAT_RICH, UpperDay, WindShift, compass, trough_passage
@@ -324,6 +325,19 @@ def comparison_lines(comparison: Comparison) -> list[str]:
     return [f"{_label(day)}:" + ";".join(parts) + "。" for day, parts in sorted(notes.items())]
 
 
+def week_lines(forecast, upper_days) -> list[str]:
+    """報表最前面的白話總結:未來一週會怎樣。"""
+    summary = plain.week_summary(forecast, upper_days)
+    if not summary:
+        return []
+    lines = ["未來一週天氣總結", summary.headline, *(f"• {s}" for s in summary.story)]
+    if summary.cause:
+        lines.append(summary.cause)
+    if summary.watch:
+        lines.append("要注意:" + ";".join(summary.watch) + "。")
+    return [*lines, ""]
+
+
 def render(
     place_name: str,
     ens: Ensemble,
@@ -344,6 +358,7 @@ def render(
         f"{where} · 時區 {meta.get('timezone') or 'UTC'} · 模式格點海拔 {meta.get('elevation') or 0:.0f} m",
         f"資料:{counts} = {total} 個系集成員",
         "",
+        *week_lines(forecast, upper_days),
     ]
     if brief is not None:  # 先講結論:這一週分成哪幾段
         lines += [brief.lede, *(f"• 時段{'一二三'[s.index - 1]} {s.summary}" for s in brief.stages), ""]
@@ -370,6 +385,10 @@ def render(
     if notes:
         lines += ["", "不確定性"]
         lines += [f"• {n}" for n in notes]
+    lines += ["", "白話總結:每天的天氣、原因與怎麼準備"]
+    lines += [f"• {d.text()}" for d in plain.plain_days(forecast, upper_days, period_list, lat < 0)]
+    if upper_days:
+        lines += ["", "名詞對照"] + [f"• {term}:{meaning}" for term, meaning in plain.GLOSSARY]
     if comparison:
         lines += ["", f"與 {comparison.age_hours:.0f} 小時前的預報比較", *(f"• {line}" for line in comparison_lines(comparison))]
     lines += [
@@ -399,6 +418,14 @@ def to_json(place_name, ens, forecast, signal_list, comparison=None, upper_days=
         "signals": [asdict(s) for s in signal_list],
         "highlights": highlights(forecast),
         "uncertainty": uncertainty(forecast),
+        "plain": {
+            "overview": plain.overview(forecast, upper_days),
+            "week": asdict(plain.week_summary(forecast, upper_days)),
+            "days": [
+                asdict(d) | {"text": d.text()}
+                for d in plain.plain_days(forecast, upper_days, period_list, (ens.meta.get("latitude") or 0.0) < 0)
+            ],
+        },
         "upper": None
         if not upper_days
         else {

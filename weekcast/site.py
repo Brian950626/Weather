@@ -27,7 +27,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import analysis, briefing, client, history, periods, report, upper, verify
+from . import analysis, briefing, client, history, periods, plain, report, upper, verify
 
 DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
 KEEP_RUNS = 40  # data.json 裡每個地點保留幾次執行的摘要(每 6 小時一次,約 10 天,校驗要用)
@@ -41,6 +41,7 @@ TABS = (
     ("models", "模式與系集"),
     ("risk", "不確定性"),
     ("verify", "校驗"),
+    ("plain", "白話總結"),
 )
 FONTS = "https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&display=swap"
 
@@ -76,6 +77,13 @@ ul{margin:8px 0;padding-left:22px;max-width:46em}li{margin:5px 0}
 main{max-width:1120px;margin:0 auto;padding:30px 20px 72px}
 .js .page:not(.on),.js article.place:not(.on),.js .view:not(.on){display:none}
 .sheet{background:var(--sheet);border:1px solid var(--line);border-radius:4px;padding:16px 18px;margin:10px 0}
+.week{background:var(--sheet);border:1px solid var(--line);border-left:6px solid var(--rain);border-radius:4px;padding:14px 20px 12px;margin:6px 0 22px;max-width:52em}
+.week .wk{font-size:13px;color:var(--muted);margin:0;letter-spacing:.08em}
+.week .wh{font-family:var(--kai);font-weight:700;font-size:24px;line-height:1.45;margin:2px 0 8px}
+.week ul{margin:6px 0 10px}
+.wkd{margin:8px 0}.wkd>summary{cursor:pointer;font-weight:600;padding:6px 0}.wkd[open]>summary{color:var(--muted);font-weight:400}
+.wkd .week{margin:4px 0 10px}
+.pd{border-top:1px solid var(--line);padding:10px 0}.pd:first-child{border-top:0}.pd h3{margin:0 0 4px}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.55}
 th,td{padding:9px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
@@ -558,6 +566,41 @@ def _risk_view(forecast, brief) -> str:
     return "".join(parts)
 
 
+def _plain_view(forecast, upper_days, period_list, southern: bool) -> str:
+    """給不熟悉氣象的讀者:每天的天氣、原因與準備,不使用術語。"""
+    cards = "".join(
+        f'<div class="pd"><h3>{esc(plain._label(d.day))}</h3><p>{esc(d.weather)}</p>'
+        + (f"<p><b>為什麼:</b>{esc(d.why)}</p>" if d.why else "")
+        + (f'<p><b>怎麼準備:</b>{esc("、".join(d.advice))}。</p>' if d.advice else "")
+        + (f'<p class="sub">{esc(d.caution)}</p>' if d.caution else "")
+        + "</div>"
+        for d in plain.plain_days(forecast, upper_days, period_list, southern)
+    )
+    parts = [
+        "<h2>這一週的天氣、原因與影響</h2>",
+        '<p class="sub">把前面各分頁的高空分析翻成日常用語:每天天氣怎樣、為什麼、該怎麼準備。</p>',
+        f"<p>{esc(plain.overview(forecast, upper_days))}</p>",
+        f'<div class="sheet">{cards}</div>',
+    ]
+    if upper_days:
+        parts.append("<h2>其他分頁裡的名詞是什麼意思</h2>" + _table([["名詞", "白話解釋"], *([t, m] for t, m in plain.GLOSSARY)]))
+    return "".join(parts)
+
+
+def _week_box(week: dict | None, link: str = "") -> str:
+    """最醒目的那一塊:用白話講未來一週會怎樣。week 是 data.json 裡 plain.week 的內容。"""
+    if not week:
+        return ""
+    story = "".join(f"<li>{esc(s)}</li>" for s in week["story"])
+    return (
+        f'<div class="week"><p class="wk">未來一週天氣總結</p><p class="wh">{esc(week["headline"])}</p><ul>{story}</ul>'
+        + (f"<p>{esc(week['cause'])}</p>" if week.get("cause") else "")
+        + (f"<p><b>要注意:</b>{esc(';'.join(week['watch']))}。</p>" if week.get("watch") else "")
+        + link
+        + "</div>"
+    )
+
+
 def _verify_view(result: verify.Verification | None, stored: bool) -> str:
     head = "<h2>過去幾天報得準不準</h2>"
     if result is None:
@@ -679,10 +722,13 @@ def build_place(
         "models": _models_view(forecast, brief, ens, comparison),
         "risk": _risk_view(forecast, brief),
         "verify": _verify_view(checked, previous_runs is not None),
+        "plain": _plain_view(forecast, upper_days, period_list, lat < 0),
     }
     total = sum(ens.member_count(s) for s in ens.systems)
+    week = plain.week_summary(forecast, upper_days)
     block = (
-        f'<p class="sub">{abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"},{total} 個系集成員,'
+        _week_box(asdict(week) if week else None, '<p class="sub">每天的說明在下方「白話總結」分頁;想看分析依據,請看其他分頁。</p>')
+        + f'<p class="sub">{abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"},{total} 個系集成員,'
         f"{_day(forecast[0].day)} 到 {_day(forecast[-1].day)}</p>"
         f'<p class="lede">{esc(brief.lede)}</p>'
         + _ribbon(forecast, brief)
@@ -857,6 +903,13 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
         f'<div class="scroll"><table class="zone"><caption>氣溫為最低–最高,°C;括號內是降雨機率。點地名看那個地點的完整分析。</caption>'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
     )
+    boxes = "".join(
+        f'<details class="wkd"{" open" if i == 0 else ""}><summary>{esc(n)}:{esc(payloads[n]["plain"]["week"]["headline"])}</summary>'
+        + _week_box(payloads[n]["plain"]["week"], f'<p class="sub"><a href="#/place/{i}/plain">看 {esc(n)} 每天的說明</a></p>')
+        + "</details>"
+        for i, n in enumerate(names)
+        if payloads[n].get("plain", {}).get("week")
+    )
     merged: dict[tuple[str, str], list[str]] = {}
     for n in names:
         for hazard, when, _ in payloads[n]["briefing"]["hazards"]:
@@ -866,7 +919,8 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
     else:
         hazards = '<p class="sub">各地這一週都沒有大雨、強風或明顯降溫的訊號。</p>'
     return (
-        f'<h1>這一週的天氣</h1><p class="lede">{esc(lede)}</p>'
+        f"<h1>這一週的天氣</h1>{boxes}"
+        f'<h2>天氣系統怎麼演變</h2><p class="lede">{esc(lede)}</p>'
         f"<h2>逐日分區預報</h2>{table}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
         '<p class="sub">主要影響系統取最多地點的判斷;各地點自己的分段、預報理由與信心度在<a href="#/place">地點預報</a>。'
