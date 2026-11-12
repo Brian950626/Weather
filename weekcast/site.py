@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import analysis, client, periods, report, upper
 
-DEFAULT_PLACES = ("台北", "台中", "高雄", "花蓮")
+DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
 REPO_URL = "https://github.com/Brian950626/Weather"
 
 CSS = """
@@ -335,7 +335,7 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str]) ->
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="weekcast.site", description="產生靜態預報網頁")
-    parser.add_argument("places", nargs="*", default=list(DEFAULT_PLACES), help="地名(預設:台北 台中 高雄 花蓮)")
+    parser.add_argument("places", nargs="*", default=list(DEFAULT_PLACES), help="地名(預設:枋寮 台北 台中 高雄 花蓮)")
     parser.add_argument("--out", type=Path, default=Path("_site"), help="輸出資料夾")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--from-file", metavar="PATH", help="改讀存下的原始資料(只產生一個地點,不連網)")

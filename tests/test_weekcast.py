@@ -290,6 +290,14 @@ class CliTest(unittest.TestCase):
         place = client.geocode("臺北市")
         self.assertAlmostEqual(place.latitude, 25.04)
         self.assertEqual(client.geocode("高雄").longitude, 120.30)
+        self.assertEqual(client.geocode("枋寮").latitude, 22.37)
+
+    def test_place_with_explicit_coordinates(self):
+        place = client.geocode("恆春@22.00,120.75")
+        self.assertEqual((place.name, place.latitude, place.longitude), ("恆春", 22.0, 120.75))
+        for bad in ("恆春@abc", "恆春@22", "恆春@99,120"):
+            with self.assertRaises(client.FetchError):
+                client.geocode(bad)
 
 
 def make_upper(days=2, z500=None, u250=None, v250=None, t850=None, site=None, latitude=40.0):

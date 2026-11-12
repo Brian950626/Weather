@@ -47,6 +47,7 @@ KNOWN_PLACES: dict[str, tuple[float, float]] = {
     "台南": (23.00, 120.21),
     "高雄": (22.63, 120.30),
     "屏東": (22.67, 120.49),
+    "枋寮": (22.37, 120.59),
     "宜蘭": (24.75, 121.75),
     "花蓮": (23.98, 121.60),
     "台東": (22.76, 121.14),
@@ -109,7 +110,20 @@ def _normalize(name: str) -> str:
 
 
 def geocode(name: str) -> Place:
-    """把地名轉成座標。先查內建表,再查 Open-Meteo。"""
+    """把地名轉成座標。先查內建表,再查 Open-Meteo。
+
+    也接受「名稱@緯度,經度」直接指定座標,例如「枋寮@22.37,120.59」,
+    用在內建表沒有、查詢服務也找不到的鄉鎮。
+    """
+    if "@" in name:
+        label, _, coords = name.partition("@")
+        try:
+            lat, lon = (float(part) for part in coords.split(","))
+        except ValueError:
+            raise FetchError(f"座標格式錯誤「{name}」,應為 名稱@緯度,經度") from None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise FetchError(f"座標超出範圍「{name}」")
+        return Place(label.strip() or f"{lat:.2f}, {lon:.2f}", lat, lon)
     key = _normalize(name)
     if key in KNOWN_PLACES:
         lat, lon = KNOWN_PLACES[key]
