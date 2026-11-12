@@ -84,7 +84,7 @@ tbody th{font-weight:600;white-space:nowrap}
 tbody tr:last-child>*{border-bottom:0}
 table.tight td,table.tight th,table.models td:not(:last-child){white-space:nowrap}
 table.models td:last-child{min-width:16em}
-table.zone td{white-space:nowrap}table.zone td:nth-child(2){white-space:normal;min-width:8em}
+table.zone td{white-space:nowrap}
 td small,th small{color:var(--ink2);font-size:13px}
 caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;padding:8px 12px 0}
 .wx{font-family:var(--kai);font-weight:700;font-size:16px}
@@ -321,7 +321,7 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
             f"{_meter(f.confidence_label)}</div>"
         )
     parts.append("</div></div>")
-    parts.append('<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。綠色的時段有天氣系統影響。</p>')
+    parts.append('<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。綠色的時段有天氣系統帶來降雨。</p>')
     return "".join(parts)
 
 
@@ -835,26 +835,34 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
     if not payloads or not all(n in payloads and payloads[n].get("briefing") for n in names):
         links = "".join(f'<li><a href="#/place/{i}/summary">{esc(n)}</a></li>' for i, n in enumerate(names))
         return f'<h1>一週天氣預報</h1><ul>{links}</ul>'
-    stages = briefing.outline([payloads[n]["briefing"]["roles"] for n in names])
-    systems = {day: system for stage in stages for day, system in stage["systems"].items()}
-    if len(stages) > 1:
-        lede = f"這一週分成 {len(stages)} 段:" + ";".join(f"{briefing._span(s['days'])} {s['headline']}" for s in stages) + "。"
-    else:
-        lede = f"這一週:{stages[0]['headline']}。"
-    head = "<th>日期</th><th>主要影響系統</th>" + "".join(f'<th><a href="#/place/{i}/summary">{esc(n)}</a></th>' for i, n in enumerate(names))
     by_place = {n: {d["day"]: d for d in payloads[n]["days"]} for n in names}
+    systems = {n: {r["day"]: r["system"] for r in payloads[n]["briefing"]["roles"]} for n in names}
+    lede = briefing.island_summary(
+        [
+            {
+                "name": n,
+                "latitude": payloads[n]["location"].get("latitude") or 0.0,
+                "longitude": payloads[n]["location"].get("longitude") or 0.0,
+                "roles": payloads[n]["briefing"]["roles"],
+                "pops": {day: d["pop"] for day, d in by_place[n].items()},
+            }
+            for n in names
+        ]
+    )
+    head = "<th>日期</th>" + "".join(f'<th><a href="#/place/{i}/summary">{esc(n)}</a></th>' for i, n in enumerate(names))
     body = ""
-    for day in sorted(systems):
+    for day in sorted({day for n in names for day in by_place[n]}):
         cells = ""
         for n in names:
             d = by_place[n].get(day)
             cells += (
-                f'<td><span class="wx">{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small></td>'
+                f'<td><span class="wx">{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small>'
+                f'<br><small>{esc(systems[n].get(day, ""))}</small></td>'
                 if d else "<td>–</td>"
             )
-        body += f"<tr><th>{esc(_day(day))}</th><td>{esc(systems[day])}</td>{cells}</tr>"
+        body += f"<tr><th>{esc(_day(day))}</th>{cells}</tr>"
     table = (
-        f'<div class="scroll"><table class="zone"><caption>氣溫為最低–最高,°C;括號內是降雨機率。點地名看那個地點的完整分析。</caption>'
+        f'<div class="scroll"><table class="zone"><caption>每格依序是天氣、最低–最高氣溫(°C)與降雨機率、主要影響系統。點地名看那個地點的完整分析。</caption>'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
     )
     merged: dict[tuple[str, str], list[str]] = {}
@@ -869,7 +877,8 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
         f'<h1>這一週的天氣</h1><p class="lede">{esc(lede)}</p>'
         f"<h2>逐日分區預報</h2>{table}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
-        '<p class="sub">主要影響系統取最多地點的判斷;各地點自己的分段、預報理由與信心度在<a href="#/place">地點預報</a>。'
+        '<p class="sub">分區以這些地點代表,同一個系統在各地的影響不一樣(例如東北季風下,迎風的北部與東部有雨,背風的中南部通常不下)。'
+        '各地點自己的分段、預報理由與信心度在<a href="#/place">地點預報</a>。'
         '接下來幾小時的雨看<a href="#/radar">即時雷達</a>。</p>'
     )
 

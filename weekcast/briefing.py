@@ -20,7 +20,7 @@ from datetime import date
 from .analysis import DayForecast, DayPattern, Signal, confidence_label, confidence_reasons
 from .upper import LIFT_RANGE, PWAT_RICH, SUBTROPICAL_HIGH, UpperDay, _turn, compass, trough_passage
 
-STABLE = {"ridge", "warm", "quiet"}  # 其餘(trough / front / cold / wet / low)算作「有天氣系統影響」
+STABLE = {"ridge", "warm", "quiet"}  # 其餘(trough / front / cold / wet / low)是會帶來降雨的天氣系統
 MAX_STAGES = 3
 
 
@@ -246,11 +246,20 @@ def _rationale(rows: list[UpperDay], southern: bool, wettest: float = 1.0) -> tu
     return out, coupling
 
 
-def _group(kinds: list[str]) -> list[list[int]]:
-    """把連續的日子依「穩定/有天氣系統影響」切段,最多 MAX_STAGES 段。"""
+def affected(kind: str, pop: float) -> bool:
+    """這一天有沒有天氣系統帶來降雨。
+
+    只看系統的種類不夠:東北季風影響下的南部是背風面,常常整天不下雨;反過來,沒有
+    明顯系統但降雨機率過半的日子(例如迎風面的地形雨)也該算進來。
+    """
+    return pop >= 0.5 or (kind not in STABLE and pop >= 0.4)
+
+
+def _group(wet: list[bool]) -> list[list[int]]:
+    """把連續的日子依「穩定/有天氣系統帶來降雨」切段,最多 MAX_STAGES 段。"""
     groups: list[list[int]] = []
-    for i, kind in enumerate(kinds):
-        if groups and (kinds[groups[-1][-1]] in STABLE) == (kind in STABLE):
+    for i, flag in enumerate(wet):
+        if groups and wet[groups[-1][-1]] == flag:
             groups[-1].append(i)
         else:
             groups.append([i])
@@ -261,31 +270,71 @@ def _group(kinds: list[str]) -> list[list[int]]:
     return groups
 
 
-def outline(role_sets: list[list[dict]]) -> list[dict]:
-    """多個地點合起來看:每天取最多地點認定的影響系統,再分成時段。
+def region(latitude: float, longitude: float) -> str | None:
+    """臺灣的分區(北部、中部、南部、東部、離島);不在臺灣附近就回傳 None。
 
-    role_sets 的每一項是一個地點的逐日角色({"day", "kind", "system"})。
-    回傳 [{"days": [...], "headline": ..., "systems": {日期: 系統}}]。
+    分法照預報報告:新竹以北與宜蘭是北部,苗栗到雲林是中部,嘉義以南是南部,花蓮、臺東是東部。
     """
-    by_day: dict[str, list[tuple[str, str]]] = {}
-    for roles in role_sets:
-        for role in roles:
-            by_day.setdefault(role["day"], []).append((role["kind"], role["system"]))
-    days = sorted(by_day)
-    if not days:
-        return []
-    common = [max(dict.fromkeys(by_day[d]), key=by_day[d].count) for d in days]
-    out = []
-    for members in _group([kind for kind, _ in common]):
-        out.append(
-            {
-                "days": [days[i] for i in members],
-                "headline": " → ".join(dict.fromkeys(common[i][1] for i in members)),
-                "stable": all(common[i][0] in STABLE for i in members),
-                "systems": {days[i]: common[i][1] for i in members},
-            }
-        )
-    return out
+    if not (21.5 <= latitude <= 26.5 and 118.0 <= longitude <= 122.3):
+        return None
+    if longitude < 119.9 or latitude > 25.6:
+        return "離島"
+    if longitude >= 121.0 and latitude < 24.5:
+        return "東部"
+    return "北部" if latitude >= 24.65 else "中部" if latitude >= 23.6 else "南部"
+
+
+def _areas(names: list[str], regions: dict[str, str | None]) -> str:
+    """把一組地點寫成分區;同一區的代表地點沒有全部在裡面時,就直接寫地名。"""
+    order = ("北部", "中部", "南部", "東部", "離島")
+    rank = lambda name: order.index(regions[name]) if regions.get(name) in order else len(order)
+    chosen, out = set(names), []
+    for name in sorted(names, key=rank):
+        area = regions.get(name)
+        whole = area is not None and all(n in chosen for n, r in regions.items() if r == area)
+        text = area if whole else name
+        if text not in out:
+            out.append(text)
+    return "、".join(out)
+
+
+def island_summary(places: list[dict]) -> str:
+    """多個地點合起來的結論:哪幾天各地都有雨、哪幾天只有部分地區、哪幾天各地穩定。
+
+    places 的每一項是 {"name", "latitude", "longitude", "roles": [{"day","kind","system"}], "pops": {日期: 降雨機率}}。
+    不取多數決:五個地點有三個在中南部,取多數會把北部的鋒面蓋掉。
+    """
+    if not places:
+        return ""
+    regions = {p["name"]: region(p["latitude"], p["longitude"]) for p in places}
+    days = sorted({role["day"] for p in places for role in p["roles"]})
+    wet: dict[str, list[str]] = {}  # 日期 → 有雨的地點
+    systems: dict[str, list[str]] = {}  # 日期 → 有雨地點的影響系統
+    for p in places:
+        for role in p["roles"]:
+            if affected(role["kind"], p["pops"].get(role["day"], 0.0)):
+                wet.setdefault(role["day"], []).append(p["name"])
+                systems.setdefault(role["day"], []).append(role["system"])
+    everywhere = [d for d in days if len(wet.get(d, [])) == len(places)]
+    nowhere = [d for d in days if not wet.get(d)]
+    partial = [d for d in days if d not in everywhere and d not in nowhere]
+    parts = []
+    if everywhere:
+        chain = " → ".join(dict.fromkeys(max(dict.fromkeys(systems[d]), key=systems[d].count) for d in everywhere))
+        parts.append(f"{_dates(everywhere)} 各地都有雨({chain})")
+    if partial:
+        by_area: dict[str, list[str]] = {}
+        for d in partial:
+            for area in _areas(wet[d], regions).split("、"):
+                by_area.setdefault(area, []).append(d)
+        dry = [n for n in regions if not any(n in wet[d] for d in partial)]
+        text = ",".join(f"{area} {_dates(when)}" for area, when in sorted(by_area.items(), key=lambda item: (item[1][0], -len(item[1]))))
+        parts.append(("其餘幾天" if everywhere else "") + f"只有部分地區有雨:{text}" + (f";{_areas(dry, regions)}大致穩定" if dry else ""))
+    if nowhere:
+        parts.append(f"{_dates(nowhere)} 各地穩定")
+    if not everywhere and not partial:
+        return "這一週各地都沒有明顯的降雨系統,天氣穩定。"
+    return "。".join(parts) + "。"
 
 
 def stages(
@@ -299,7 +348,7 @@ def stages(
     先依「穩定」與「有天氣系統影響」切段;超過三段時,把最短的相鄰兩段併在一起,
     標題寫成「回暖 → 鋒面通過」這樣的先後順序。
     """
-    groups = _group([role.kind for role in roles])
+    groups = _group([affected(role.kind, fc.pop) for role, fc in zip(roles, forecast)])
     rows = {r.day: r for r in upper_days or []}
     out = []
     for index, members in enumerate(groups, 1):
@@ -318,7 +367,7 @@ def stages(
                 pop=(min(fc.pop for fc in days), max(fc.pop for fc in days)),
                 confidence=score,
                 confidence_label=confidence_label(score),
-                stable=all(roles[i].kind in STABLE for i in members),
+                stable=not any(affected(roles[i].kind, forecast[i].pop) for i in members),
                 reasons=[f"{label(weakest.day)}:" + "、".join(confidence_reasons(weakest))] if len(days) > 1 else confidence_reasons(weakest),
                 rationale=rationale,
                 coupling=coupling,

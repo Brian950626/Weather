@@ -314,14 +314,52 @@ class BriefingTest(unittest.TestCase):
         for fc in self.forecast:
             self.assertTrue(fc.tmax.p10 <= fc.tmax.p25 <= fc.tmax.p50 <= fc.tmax.p75 <= fc.tmax.p90)
 
-    def test_outline_takes_the_majority_view_across_places(self):
-        role = lambda day, kind, system: {"day": day, "kind": kind, "system": system}
-        north = [role("2026-01-01", "ridge", "高壓脊籠罩"), role("2026-01-02", "front", "鋒面通過"), role("2026-01-03", "cold", "東北季風影響")]
-        south = [role("2026-01-01", "ridge", "高壓脊籠罩"), role("2026-01-02", "quiet", "天氣穩定"), role("2026-01-03", "cold", "東北季風影響")]
-        stages = briefing.outline([north, north, south])
-        self.assertEqual([s["days"] for s in stages], [["2026-01-01"], ["2026-01-02", "2026-01-03"]])
-        self.assertEqual(stages[1]["headline"], "鋒面通過 → 東北季風影響")
-        self.assertEqual(briefing.outline([]), [])
+    def island(self, **pops):
+        """四個代表地點、三天:第一天穩定,第二天鋒面,第三天東北季風。pops 是各地三天的降雨機率。"""
+        coords = {"台北": (25.04, 121.56), "台中": (24.15, 120.67), "高雄": (22.63, 120.30), "枋寮": (22.37, 120.59), "花蓮": (23.98, 121.60)}
+        days = ["2026-01-01", "2026-01-02", "2026-01-03"]
+        plan = [("ridge", "高壓脊籠罩"), ("front", "鋒面通過"), ("cold", "東北季風影響")]
+        return [
+            {"name": name, "latitude": coords[name][0], "longitude": coords[name][1],
+             "roles": [{"day": d, "kind": k, "system": text} for d, (k, text) in zip(days, plan)], "pops": dict(zip(days, values))}
+            for name, values in pops.items()
+        ]
+
+    def test_island_summary_does_not_let_the_south_outvote_the_north(self):
+        # 第三天東北季風:迎風的台北、花蓮有雨,背風的中南部三個地點不下——多數決會說「穩定」
+        text = briefing.island_summary(self.island(台北=(0.1, 0.9, 0.8), 台中=(0.0, 0.7, 0.2), 高雄=(0.0, 0.6, 0.1), 枋寮=(0.0, 0.6, 0.3), 花蓮=(0.2, 0.9, 0.9)))
+        self.assertIn("1/2(五) 各地都有雨(鋒面通過)", text)
+        self.assertIn("只有部分地區有雨:北部 1/3(六),東部 1/3(六);中部、南部大致穩定", text)
+        self.assertIn("1/1(四) 各地穩定", text)
+
+    def test_island_summary_names_places_when_a_region_is_split(self):
+        # 南部的兩個地點看法不同時,不能說「南部有雨」,直接寫地名
+        text = briefing.island_summary(self.island(台北=(0.1, 0.2, 0.2), 高雄=(0.0, 0.1, 0.1), 枋寮=(0.0, 0.8, 0.1)))
+        self.assertIn("只有部分地區有雨:枋寮 1/2(五)", text)
+        self.assertNotIn("南部 1/2", text)
+        quiet = briefing.island_summary(self.island(台北=(0.1, 0.2, 0.2), 高雄=(0.0, 0.1, 0.1)))
+        self.assertEqual(quiet, "這一週各地都沒有明顯的降雨系統,天氣穩定。")
+        self.assertEqual(briefing.island_summary([]), "")
+
+    def test_regions_follow_the_forecast_report(self):
+        where = lambda name: briefing.region(*client.KNOWN_PLACES[name])
+        self.assertEqual([where(n) for n in ("基隆", "新竹", "宜蘭")], ["北部"] * 3)
+        self.assertEqual([where(n) for n in ("苗栗", "台中", "雲林")], ["中部"] * 3)
+        self.assertEqual([where(n) for n in ("嘉義", "高雄", "屏東")], ["南部"] * 3)
+        self.assertEqual([where(n) for n in ("花蓮", "台東")], ["東部"] * 2)
+        self.assertEqual([where(n) for n in ("澎湖", "金門", "馬祖")], ["離島"] * 3)
+        self.assertIsNone(briefing.region(35.68, 139.69))  # 東京不在臺灣的分區裡
+
+    def test_a_dry_monsoon_day_is_not_counted_as_a_rain_system(self):
+        self.assertTrue(briefing.affected("cold", 0.7))
+        self.assertFalse(briefing.affected("cold", 0.1))  # 背風面:東北季風影響但不下雨
+        self.assertTrue(briefing.affected("quiet", 0.6))  # 沒有明顯系統但降雨機率過半
+        self.assertFalse(briefing.affected("ridge", 0.45))
+        # 整段都是乾的東北季風時,那個時段算穩定
+        dry = [analysis.DayForecast(**{**fc.__dict__, "pop": 0.1}) for fc in self.forecast]
+        roles = [briefing.DayRole(fc.day, "cold", "東北季風影響") for fc in dry]
+        stages = briefing.stages(dry, roles)
+        self.assertEqual([(len(s.days), s.stable) for s in stages], [(7, True)])
 
 
 class VerifyTest(unittest.TestCase):
@@ -811,6 +849,8 @@ class SiteTest(unittest.TestCase):
         self.assertEqual(page.count('<section class="view"'), 6)
         self.assertIn('<a href="#/place/0/summary">台北</a>', page)  # 總覽的表格連到地點頁
         self.assertIn("逐日分區預報", page)
+        self.assertNotIn("<th>主要影響系統</th><th><a", page)  # 總覽不再用多數決的單一欄位
+        self.assertIn("<br><small>副熱帶高壓籠罩</small></td>", page)  # 每個地點在自己的格子裡寫出影響系統
         self.assertEqual(len(data["places"]["台北"]["briefing"]["stages"]), 3)
         self.assertIsNone(data["places"]["台北"]["verification"])
         self.assertIn("還沒有可以校驗的紀錄", page)
