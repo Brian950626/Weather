@@ -7,10 +7,10 @@ from dataclasses import asdict
 from datetime import date
 
 from .analysis import DayForecast, Ensemble, Signal
-from .history import Comparison
 from . import plain
+from .history import Comparison, Trend
 from .periods import PERIODS, PeriodForecast, by_day
-from .upper import UpperDay, compass, trough_passage
+from .upper import PWAT_RICH, UpperDay, WindShift, compass, trough_passage
 
 
 def _width(text: str) -> int:
@@ -140,8 +140,10 @@ def period_rows(rows: list[PeriodForecast]) -> list[list[str]]:
         line = [_label(day)]
         for name, _, _ in PERIODS:
             cell = cells.get(name)
-            if cell is None or cell.temp is None or cell.pop is None:
+            if cell is None or cell.temp is None:
                 line.append("–")
+            elif cell.pop is None:  # 資料沒有涵蓋到這個時段結束,雨量不完整
+                line.append(f"{cell.temp.p50:.0f}°")
             else:
                 line.append(f"{cell.temp.p50:.0f}° {cell.sky} {cell.pop:.0%}")
         table.append(line)
@@ -182,9 +184,16 @@ def _jet(row: UpperDay) -> str:
     return f"{'北' if row.jet_offset > 0 else '南'} {abs(row.jet_offset)}°{far} {row.jet_core:.0f}"
 
 
-def _upper_table(rows: list[UpperDay]) -> list[str]:
-    head = ["日期", "250風", "噴流軸", "輻散", "500槽脊", "高度m", "700濕度", "850溫/濕/風", "平流", "925風", "K"]
-    table = [head]
+def _low_wind(row: UpperDay) -> str:
+    """925 hPa 的風;當天風向大轉變時寫成「西→東北 5」,因為平均風向沒有意義。"""
+    if row.shift is not None and row.wind925 is not None:
+        return f"{compass(row.shift.from_dir)}→{compass(row.shift.to_dir)} {row.wind925:.0f}"
+    return _wind(row.dir925, row.wind925)
+
+
+def upper_rows(rows: list[UpperDay]) -> list[list[str]]:
+    """高空分析表(第一列是標題),文字報表與網頁共用。"""
+    table = [["日期", "250風", "噴流軸", "輻散", "500槽脊", "高度m", "700濕度", "850溫/濕/風", "平流", "925風", "PWAT", "K", "CAPE"]]
     for r in rows:
         low = "–" if r.t850 is None or r.rh850 is None else f"{r.t850:.0f}°C {r.rh850:.0f}% {_wind(r.dir850, r.wind850)}"
         table.append(
@@ -198,14 +207,29 @@ def _upper_table(rows: list[UpperDay]) -> list[str]:
                 "–" if r.rh700 is None else f"{r.rh700:.0f}%",
                 low,
                 _signed(r.tadv850),
-                _wind(r.dir925, r.wind925),
+                _low_wind(r),
+                "–" if r.pwat is None else f"{r.pwat:.0f}",
                 "–" if r.k is None else f"{r.k:.0f}",
+                "–" if r.cape is None else f"{r.cape:.0f}",
             ]
         )
-    widths = [max(_width(row[i]) for row in table) for i in range(len(head))]
-    lines = ["  ".join(_pad(cell, widths[i]) for i, cell in enumerate(row)).rstrip() for row in table]
-    lines.insert(1, "  ".join("─" * w for w in widths))
-    return lines
+    return table
+
+
+def _clock(stamp: str) -> str:
+    return f"{int(stamp[11:13])} 時"
+
+
+def shift_text(shift: WindShift) -> str:
+    """低層風向轉變的說明,例如「925 hPa 風向在 6 時到 12 時之間由西風轉北風,…」。"""
+    if shift.start[:10] == shift.end[:10]:
+        when = f" {_clock(shift.start)}到 {_clock(shift.end)}之間"
+    else:
+        when = f"前一天 {_clock(shift.start)}到當天 {_clock(shift.end)}之間"
+    text = f"925 hPa 風向在{when}由{compass(shift.from_dir)}風轉{compass(shift.to_dir)}風,低層鋒面(冷空氣前緣)通過"
+    if shift.cooling is not None and shift.cooling >= 1:
+        text += f",之後一天內 925 hPa 降溫 {shift.cooling:.0f}°C"
+    return text
 
 
 def upper_impact(rows: list[UpperDay], forecast: list[DayForecast], southern: bool = False) -> list[str]:
@@ -237,8 +261,12 @@ def upper_impact(rows: list[UpperDay], forecast: list[DayForecast], southern: bo
             wet, dry = fc.pop >= 0.6, fc.pop < 0.3
             if row.outlook in ("wet", "showery") and dry:
                 text += f";但系集降雨機率只有 {fc.pop:.0%},留意之後上修"
-            elif row.outlook == "wet" and wet:
+            elif row.outlook == "wet" and not wet:
+                text += f";但系集降雨機率只有 {fc.pop:.0%},高空條件比系集的降雨預報樂觀,以系集為準"
+            elif row.outlook in ("wet", "showery") and wet:
                 text += f";與系集降雨機率 {fc.pop:.0%} 一致"
+            elif row.outlook == "neutral" and wet:
+                text += f";系集降雨機率卻有 {fc.pop:.0%},雨主要由這裡看不到的低層或地形因素造成"
             elif row.outlook == "shallow" and wet:
                 text += f";降雨機率雖有 {fc.pop:.0%},雨量不大(中位數 {fc.precip.p50:.0f} mm)"
             elif row.outlook == "stable" and wet:
@@ -246,6 +274,15 @@ def upper_impact(rows: list[UpperDay], forecast: list[DayForecast], southern: bo
             elif row.outlook == "stable" and dry:
                 text += ";與系集少雨一致"
         extras = []
+        if row.shift is not None:
+            extras.append(shift_text(row.shift))
+        if row.rh700_early is not None and row.rh700_late is not None:
+            if row.rh700_early >= 70 and row.rh700_late <= 45:
+                extras.append(f"700 hPa 濕度由 {row.rh700_early:.0f}% 降到 {row.rh700_late:.0f}%,中層在當天轉乾")
+            elif row.rh700_early <= 45 and row.rh700_late >= 70:
+                extras.append(f"700 hPa 濕度由 {row.rh700_early:.0f}% 升到 {row.rh700_late:.0f}%,中層在當天轉濕")
+        if row.pwat is not None and row.pwat >= PWAT_RICH and row.outlook in ("wet", "showery"):
+            extras.append(f"可降水量 {row.pwat:.0f} mm,整層水氣充沛,有雨時雨勢可能較大")
         if row.wind925 is not None and row.rh850 is not None and row.wind925 >= 8 and row.rh850 >= 80:
             extras.append(f"925 hPa {compass(row.dir925)}風 {row.wind925:.0f} m/s 輸送低層水氣,迎風面易有地形雨")
         if previous is not None and row.t925 is not None and previous.t925 is not None:
@@ -257,6 +294,35 @@ def upper_impact(rows: list[UpperDay], forecast: list[DayForecast], southern: bo
         out.append(f"{_label(row.day)}:{text}。" + "".join(f"{e}。" for e in extras))
         previous = row
     return out
+
+
+def _trend_text(trend: Trend) -> str:
+    if trend.what == "pop":
+        name, series = "降雨機率", " → ".join(f"{v:.0%}" for v in trend.values)
+    else:
+        name, series = "高溫", " → ".join(f"{v:.0f}" for v in trend.values) + "°C"
+    if trend.kind == "swinging":
+        return f"{name}來回擺盪({series}),模式還沒有定論"
+    direction = "上修" if trend.kind == "rising" else "下修"
+    return f"{name}連續 {len(trend.values) - 1} 次{direction}({series}),修正方向一致、趨勢較可信"
+
+
+def comparison_lines(comparison: Comparison) -> list[str]:
+    """和上一次預報差多少,以及最近幾次起報是同方向修正還是來回擺盪。"""
+    notes: dict[str, list[str]] = {}
+    for c in comparison.changes:
+        bits = []
+        if abs(c.tmax) >= 1:
+            bits.append(f"高溫{'上修' if c.tmax > 0 else '下修'} {abs(c.tmax):.0f}°C")
+        if abs(c.pop) >= 0.15:
+            bits.append(f"降雨機率{'提高' if c.pop > 0 else '降低'} {abs(c.pop) * 100:.0f} 個百分點")
+        if bits:
+            notes.setdefault(c.day, []).append("、".join(bits))
+    for trend in comparison.trends:
+        notes.setdefault(trend.day, []).append(_trend_text(trend))
+    if not notes:
+        return ["沒有明顯變化,預報穩定。"]
+    return [f"{_label(day)}:" + ";".join(parts) + "。" for day, parts in sorted(notes.items())]
 
 
 def render(
@@ -293,7 +359,7 @@ def render(
         lines += [
             "",
             "高空分析(ECMWF 與 AIFS 系集的中位數;風速 m/s,輻散 10⁻⁵/s,平流 °C/日)",
-            *_upper_table(upper_days),
+            *_grid(upper_rows(upper_days)),
             "",
             "高空對地面的影響",
             *(f"• {line}" for line in upper_impact(upper_days, forecast, lat < 0)),
@@ -307,18 +373,7 @@ def render(
     if upper_days:
         lines += ["", "名詞對照"] + [f"• {term}:{meaning}" for term, meaning in plain.GLOSSARY]
     if comparison:
-        moved = [c for c in comparison.changes if abs(c.tmax) >= 1 or abs(c.pop) >= 0.15]
-        lines += ["", f"與 {comparison.age_hours:.0f} 小時前的預報比較"]
-        if moved:
-            for c in moved:
-                bits = []
-                if abs(c.tmax) >= 1:
-                    bits.append(f"高溫{'上修' if c.tmax > 0 else '下修'} {abs(c.tmax):.0f}°C")
-                if abs(c.pop) >= 0.15:
-                    bits.append(f"降雨機率{'提高' if c.pop > 0 else '降低'} {abs(c.pop) * 100:.0f} 個百分點")
-                lines.append(f"• {_label(c.day)}:" + "、".join(bits) + "。")
-        else:
-            lines.append("• 沒有明顯變化,預報穩定。")
+        lines += ["", f"與 {comparison.age_hours:.0f} 小時前的預報比較", *(f"• {line}" for line in comparison_lines(comparison))]
     lines += [
         "",
         "說明:數值是所有成員的中位數,括號為 10–90% 範圍;降雨機率是日雨量達 1 mm 的成員比例;",
@@ -329,7 +384,9 @@ def render(
         lines += [
             "高空表:噴流軸欄是 250 hPa 最大風速的位置(相對測站)與風速,未達 30 m/s 記為無,",
             "「20°+」表示在分析範圍邊緣、可能更遠;槽脊欄的度數是槽線相對測站的經度距離;",
-            "輻散為正代表高層空氣流出、有利下方上升;平流為正是暖平流;K 指數 30 以上容易有雷雨。",
+            "輻散為正代表高層空氣流出、有利下方上升;平流為正是暖平流;925 風欄的「西→東北」表示當天",
+            "低層風向轉變(鋒面通過);PWAT 是整層大氣的可降水量(mm);K 指數 30 以上或 CAPE(J/kg,",
+            "當天最大值)1000 以上容易有雷雨。",
         ]
     return "\n".join(lines)
 
@@ -363,5 +420,7 @@ def to_json(place_name, ens, forecast, signal_list, comparison=None, upper_days=
             "previous_at": comparison.previous_at.isoformat(),
             "age_hours": round(comparison.age_hours, 1),
             "changes": [asdict(c) for c in comparison.changes],
+            "trends": [asdict(t) for t in comparison.trends],
+            "notes": comparison_lines(comparison),
         },
     }
