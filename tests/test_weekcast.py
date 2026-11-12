@@ -525,5 +525,52 @@ class SiteTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "index.html").exists())
 
 
+class RateLimitTest(unittest.TestCase):
+    def fake(self, outcomes):
+        import urllib.error
+        from unittest import mock
+
+        calls, sleeps = [], []
+
+        def urlopen(request, timeout=None):
+            calls.append(request.full_url)
+            outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+            if isinstance(outcome, tuple):
+                code, reason = outcome
+                body = io.BytesIO(json.dumps({"error": True, "reason": reason}).encode())
+                raise urllib.error.HTTPError(request.full_url, code, "err", {}, body)
+            return contextlib.closing(io.BytesIO(json.dumps(outcome).encode()))
+
+        patches = [mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep", sleeps.append)]
+        return calls, sleeps, patches
+
+    def run_get(self, outcomes):
+        calls, sleeps, patches = self.fake(outcomes)
+        with patches[0], patches[1]:
+            try:
+                result = client._get_json("https://example.test/x", {})
+            except client.FetchError as err:
+                result = err
+        return result, calls, sleeps
+
+    def test_minutely_limit_waits_and_retries(self):
+        limited = (429, "Minutely API request limit exceeded. Please try again in one minute.")
+        result, calls, sleeps = self.run_get([limited, limited, {"ok": 1}])
+        self.assertEqual(result, {"ok": 1})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [client.MINUTE_WAIT, client.MINUTE_WAIT])
+
+    def test_minutely_limit_gives_up_eventually(self):
+        limited = (429, "Minutely API request limit exceeded.")
+        result, calls, _ = self.run_get([limited])
+        self.assertIsInstance(result, client.FetchError)
+        self.assertEqual(len(calls), client.MAX_MINUTE_WAITS + 1)
+
+    def test_daily_limit_fails_immediately(self):
+        result, calls, sleeps = self.run_get([(429, "Daily API request limit exceeded. Please try again tomorrow.")])
+        self.assertIsInstance(result, client.FetchError)
+        self.assertEqual((len(calls), sleeps), (1, []))
+
+
 if __name__ == "__main__":
     unittest.main()
