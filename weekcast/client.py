@@ -136,25 +136,30 @@ def geocode(name: str) -> Place:
     return Place(hit["name"], hit["latitude"], hit["longitude"], hit.get("country", ""))
 
 
-def fetch_ensemble(latitude: float, longitude: float, days: int = 7, system_ids=None) -> dict:
-    """取得多套系集在單一地點的逐日與逐時預報(原始 JSON)。"""
+def url_for(params: dict) -> str:
+    """把查詢參數組成完整網址(瀏覽器版用它自己發請求)。"""
+    return ENSEMBLE_URL + "?" + urllib.parse.urlencode(params)
+
+
+def surface_params(latitude: float, longitude: float, days: int = 7, system_ids=None) -> dict:
     ids = list(system_ids) if system_ids else [s.api_id for s in SYSTEMS]
     unknown = [i for i in ids if i not in BY_API_ID]
     if unknown:
         raise FetchError(f"未知的模式代碼:{', '.join(unknown)}")
-    return _get_json(
-        ENSEMBLE_URL,
-        {
-            "latitude": f"{latitude:.4f}",
-            "longitude": f"{longitude:.4f}",
-            "daily": ",".join(DAILY_VARS),
-            "hourly": ",".join(HOURLY_VARS),
-            "models": ",".join(ids),
-            "timezone": "auto",
-            "forecast_days": days,
-        },
-        timeout=90,
-    )
+    return {
+        "latitude": f"{latitude:.4f}",
+        "longitude": f"{longitude:.4f}",
+        "daily": ",".join(DAILY_VARS),
+        "hourly": ",".join(HOURLY_VARS),
+        "models": ",".join(ids),
+        "timezone": "auto",
+        "forecast_days": days,
+    }
+
+
+def fetch_ensemble(latitude: float, longitude: float, days: int = 7, system_ids=None) -> dict:
+    """取得多套系集在單一地點的逐日與逐時預報(原始 JSON)。"""
+    return _get_json(ENSEMBLE_URL, surface_params(latitude, longitude, days, system_ids), timeout=90)
 
 
 def cross_points(latitude: float, longitude: float) -> list[dict]:
@@ -171,41 +176,49 @@ def cross_points(latitude: float, longitude: float) -> list[dict]:
     return points
 
 
+def _upper_common(days: int, timezone: str) -> dict:
+    return {"timezone": timezone, "forecast_days": days, "temporal_resolution": "hourly_6", "wind_speed_unit": "ms"}
+
+
+def profile_params(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
+    return _upper_common(days, timezone) | {
+        "latitude": f"{latitude:.4f}",
+        "longitude": f"{longitude:.4f}",
+        "hourly": ",".join(PROFILE_VARS),
+        "models": ",".join(UPPER_SYSTEM_IDS),
+    }
+
+
+def cross_params(points: list[dict], days: int = 7, timezone: str = "GMT") -> dict:
+    return _upper_common(days, timezone) | {
+        "latitude": ",".join(f"{p['latitude']:.2f}" for p in points),
+        "longitude": ",".join(f"{p['longitude']:.2f}" for p in points),
+        "hourly": ",".join(CROSS_VARS),
+        "models": CROSS_SYSTEM_ID,
+    }
+
+
+def period_params(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
+    return {
+        "latitude": f"{latitude:.4f}",
+        "longitude": f"{longitude:.4f}",
+        "hourly": ",".join(PERIOD_VARS),
+        "models": ",".join(s.api_id for s in SYSTEMS),
+        "timezone": timezone,
+        "forecast_days": days,
+        "temporal_resolution": "hourly_3",
+    }
+
+
 def fetch_upper(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
     """取得高空分析所需的資料:測站垂直剖面與十字剖面(每 6 小時一筆)。
 
     timezone 要與地面資料相同,逐日彙整時日期才對得起來;十字剖面橫跨多個
     時區,所以不能用 auto。
     """
-    common = {
-        "timezone": timezone,
-        "forecast_days": days,
-        "temporal_resolution": "hourly_6",
-        "wind_speed_unit": "ms",
-    }
-    profile = _get_json(
-        ENSEMBLE_URL,
-        common
-        | {
-            "latitude": f"{latitude:.4f}",
-            "longitude": f"{longitude:.4f}",
-            "hourly": ",".join(PROFILE_VARS),
-            "models": ",".join(UPPER_SYSTEM_IDS),
-        },
-        timeout=90,
-    )
+    profile = _get_json(ENSEMBLE_URL, profile_params(latitude, longitude, days, timezone), timeout=90)
     points = cross_points(latitude, longitude)
-    data = _get_json(
-        ENSEMBLE_URL,
-        common
-        | {
-            "latitude": ",".join(f"{p['latitude']:.2f}" for p in points),
-            "longitude": ",".join(f"{p['longitude']:.2f}" for p in points),
-            "hourly": ",".join(CROSS_VARS),
-            "models": CROSS_SYSTEM_ID,
-        },
-        timeout=120,
-    )
+    data = _get_json(ENSEMBLE_URL, cross_params(points, days, timezone), timeout=120)
     if not isinstance(data, list) or len(data) != len(points):
         raise FetchError("十字剖面的回應格式不符預期")
     return {"profile": profile, "cross": {"points": points, "data": data}}
@@ -213,19 +226,7 @@ def fetch_upper(latitude: float, longitude: float, days: int = 7, timezone: str 
 
 def fetch_periods(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
     """取得時段預報所需的資料:每 3 小時一筆的氣溫、雨量、雲量(所有成員)。"""
-    return _get_json(
-        ENSEMBLE_URL,
-        {
-            "latitude": f"{latitude:.4f}",
-            "longitude": f"{longitude:.4f}",
-            "hourly": ",".join(PERIOD_VARS),
-            "models": ",".join(s.api_id for s in SYSTEMS),
-            "timezone": timezone,
-            "forecast_days": days,
-            "temporal_resolution": "hourly_3",
-        },
-        timeout=90,
-    )
+    return _get_json(ENSEMBLE_URL, period_params(latitude, longitude, days, timezone), timeout=90)
 
 
 def split_bundle(raw: dict) -> tuple[dict, dict | None]:

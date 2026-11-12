@@ -17,6 +17,11 @@
 在瀏覽器裡即時載入,每 5 分鐘更新)。同一份資料的 JSON 在
 <https://brian950626.github.io/Weather/data.json>。
 
+**查其他地點**:在頁面上方的搜尋欄輸入地名(例如「恆春」、「Tokyo」)或座標
+(例如 `22.37,120.59`),同名的地點會列出來讓你選。選定後會在你的瀏覽器裡用同一份
+分析程式即時計算,約 10–20 秒,結果與預設城市的內容完全相同;查過的地點會留在
+分頁列,按 × 可移除。
+
 網頁由 `.github/workflows/pages.yml` 在 GitHub Actions 上產生並發布到 GitHub Pages。
 要換地點,修改該檔案裡的 `PLACES`。首次啟用需要在 repository 的
 Settings → Pages 把 Source 設為 **GitHub Actions**,且這個流程要在 `main` 分支上才會執行。

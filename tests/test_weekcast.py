@@ -641,5 +641,51 @@ class PeriodTest(unittest.TestCase):
         self.assertEqual(len(data["places"]["台北"]["periods"]), 28)
 
 
+class BrowserSearchTest(unittest.TestCase):
+    """網頁搜尋欄用的進入點:抓資料的方式不同,分析必須和命令列相同。"""
+
+    def run_forecast(self, fail=()):
+        import asyncio
+        from weekcast import browser
+
+        bundle = client.load_raw(FIXTURE)
+        asked = []
+
+        async def get(params):
+            asked.append(params)
+            kind = "cross" if "," in params["latitude"] else "profile" if "wind_speed_unit" in params else (
+                "periods" if params.get("temporal_resolution") == "hourly_3" else "surface")
+            if kind in fail:
+                raise RuntimeError("HTTP 429")
+            return {"surface": bundle["surface"], "profile": bundle["upper"]["profile"],
+                    "cross": bundle["upper"]["cross"]["data"], "periods": bundle["periods"]}[kind]
+
+        return asyncio.run(browser.forecast("枋寮", 25.05, 121.53, 7, get)), asked
+
+    def test_same_sections_as_the_scheduled_page(self):
+        block, asked = self.run_forecast()
+        self.assertEqual(len(asked), 4)
+        for needle in ("時段預報", "高空分析", "逐日預報", "133 個系集成員"):
+            self.assertIn(needle, block)
+        self.assertEqual(asked[1]["timezone"], "Asia/Taipei")  # 高空資料沿用地面資料的時區
+        self.assertTrue(client.url_for(asked[0]).startswith("https://ensemble-api.open-meteo.com/v1/ensemble?latitude=25.05"))
+
+    def test_upper_air_failure_still_gives_surface_forecast(self):
+        block, _ = self.run_forecast(fail=("cross", "periods"))
+        self.assertIn("逐日預報", block)
+        self.assertNotIn("高空分析", block)
+        self.assertNotIn("時段預報", block)
+
+    def test_engine_archive_contains_the_package(self):
+        import zipfile
+        from weekcast import site
+
+        with tempfile.TemporaryDirectory() as tmp:
+            site.write_engine(Path(tmp) / "weekcast.zip")
+            names = zipfile.ZipFile(Path(tmp) / "weekcast.zip").namelist()
+        for module in ("__init__", "analysis", "browser", "client", "periods", "report", "site", "systems", "upper"):
+            self.assertIn(f"weekcast/{module}.py", names)
+
+
 if __name__ == "__main__":
     unittest.main()
