@@ -496,5 +496,34 @@ class RealUpperDataTest(unittest.TestCase):
                 self.assertIsNotNone(getattr(row, name), f"{row.day} {name}")
 
 
+class SiteTest(unittest.TestCase):
+    def test_page_and_data_are_generated_offline(self):
+        from weekcast import site
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(site.main(["台北", "--out", tmp, "--from-file", FIXTURE]), 0)
+            page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+            data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
+        self.assertIn("台北 一週天氣預報", page)
+        self.assertIn("高空分析", page)
+        self.assertEqual(page.count('class="day"'), 7)
+        self.assertEqual(page.count("<svg"), 2)
+        self.assertEqual(len(data["places"]["台北"]["days"]), 7)
+
+    def test_text_is_escaped(self):
+        from weekcast import site
+
+        page = site.build_page([("<b>x</b>", "")], datetime(2026, 1, 1, tzinfo=timezone.utc), ["a&b"])
+        self.assertNotIn("<b>x</b>", page)
+        self.assertIn("a&amp;b", page)
+
+    def test_no_page_when_every_place_fails(self):
+        from weekcast import site
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(site.main(["台北", "--out", tmp, "--from-file", "/nonexistent.json"]), 1)
+            self.assertFalse((Path(tmp) / "index.html").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

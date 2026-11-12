@@ -1,0 +1,49 @@
+name: 更新預報網頁
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 全球模式約每 6 小時更新一次;避開整點
+    - cron: "23 1,7,13,19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # 要顯示的地點,以空白分隔。台灣各縣市可用中文,其他地點用英文地名。
+  PLACES: 台北 台中 高雄 花蓮
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 測試
+        run: python -m unittest -q
+      - name: 產生網頁
+        run: python -m weekcast.site --out _site $PLACES
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

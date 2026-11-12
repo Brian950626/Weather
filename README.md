@@ -9,6 +9,23 @@
 方法來自對 [Tropical Tidbits](https://www.tropicaltidbits.com) 的研究,整理在
 [docs/tropical-tidbits-notes.md](docs/tropical-tidbits-notes.md)。
 
+## 線上預報
+
+**<https://brian950626.github.io/Weather/>**
+
+台北、台中、高雄、花蓮的一週預報,每 6 小時自動更新。同一份資料的 JSON 在
+<https://brian950626.github.io/Weather/data.json>。
+
+網頁由 `.github/workflows/pages.yml` 在 GitHub Actions 上產生並發布到 GitHub Pages。
+要換地點,修改該檔案裡的 `PLACES`。首次啟用需要在 repository 的
+Settings → Pages 把 Source 設為 **GitHub Actions**,且這個流程要在 `main` 分支上才會執行。
+
+在本機產生同樣的網頁:
+
+```bash
+python3 -m weekcast.site --out _site 台北 台中
+```
+
 ## 使用
 
 需要 Python 3.10 以上,不需安裝任何套件。
