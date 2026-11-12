@@ -80,8 +80,8 @@ class ParseTest(unittest.TestCase):
     def test_variables_a_model_does_not_provide_are_dropped(self):
         system = simple_system([[20], [22]], [[0], [5]])
         system["wind_gusts_10m_max"] = [[None], [None]]
-        ens = analysis.parse(make_raw(["2026-01-01"], {"icon_global_eps": system}))
-        self.assertNotIn("wind_gusts_10m_max", ens.daily["ICON"])
+        ens = analysis.parse(make_raw(["2026-01-01"], {"ecmwf_aifs025_ensemble": system}))
+        self.assertNotIn("wind_gusts_10m_max", ens.daily["AIFS"])
         self.assertIsNone(analysis.daily_forecast(ens)[0].gust)
 
     def test_api_error_is_reported(self):
@@ -183,9 +183,10 @@ class RealDataTest(unittest.TestCase):
         cls.ens = load_surface()
         cls.forecast = analysis.daily_forecast(cls.ens, 7)
 
-    def test_all_five_systems_and_members_present(self):
+    def test_three_systems_present_and_removed_models_ignored(self):
+        # 樣本檔裡還有 GEPS 與 ICON 的資料,已不採用,解析時應略過
         counts = {s: self.ens.member_count(s) for s in self.ens.systems}
-        self.assertEqual(counts, {"ECMWF": 51, "GEFS": 31, "GEPS": 21, "ICON": 40, "AIFS": 51})
+        self.assertEqual(counts, {"ECMWF": 51, "GEFS": 31, "AIFS": 51})
 
     def test_values_are_ordered_and_plausible(self):
         self.assertEqual(len(self.forecast), 7)
@@ -205,7 +206,7 @@ class RealDataTest(unittest.TestCase):
 
     def test_report_renders(self):
         text = report.render("台北", self.ens, self.forecast, analysis.signals(self.ens, 7))
-        self.assertIn("194 個系集成員", text)
+        self.assertIn("133 個系集成員", text)
         self.assertIn("11/18 三", text)
 
     def test_padding_counts_cjk_as_double_width(self):

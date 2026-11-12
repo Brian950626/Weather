@@ -1,7 +1,7 @@
 """本工具使用的全球系集預報系統。
 
-這些就是 Tropical Tidbits「Forecast Models → Ensemble」分類下的那幾套系集
-(EPS、GEFS、GEPS、AIFS-ENS),再加上 ICON 的系集版本。資料經由 Open-Meteo
+對應 Tropical Tidbits「Forecast Models → Ensemble」分類下的 EPS、GEFS、AIFS-ENS。
+加拿大 GEPS 與德國 ICON 的系集原本也有納入,後來依使用者要求剔除。資料經由 Open-Meteo
 Ensemble API 取得數值,而不是抓 Tropical Tidbits 的圖。
 """
 
@@ -22,8 +22,6 @@ class EnsembleSystem:
 SYSTEMS: tuple[EnsembleSystem, ...] = (
     EnsembleSystem("ecmwf_ifs025", "ecmwf_ifs025_ensemble", "ECMWF", "歐洲中期天氣預報中心", "EPS"),
     EnsembleSystem("gfs025", "ncep_gefs025", "GEFS", "美國 NCEP", "GEFS"),
-    EnsembleSystem("gem_global", "gem_global_ensemble", "GEPS", "加拿大氣象局", "GEPS"),
-    EnsembleSystem("icon_global", "icon_global_eps", "ICON", "德國氣象局", "ICON"),
     EnsembleSystem("ecmwf_aifs025", "ecmwf_aifs025_ensemble", "AIFS", "ECMWF(AI 模式)", "AIFS-ENS"),
 )
 
@@ -45,8 +43,7 @@ HOURLY_VARS = (
 )
 
 # --- 高空分析 ---------------------------------------------------------------
-# 只有 ECMWF 的兩套系集在 Open-Meteo 上提供完整的氣壓層資料;GEPS 只有
-# 500/850 hPa 的高度與溫度,GEFS 與 ICON 沒有氣壓層資料。
+# 只有 ECMWF 的兩套系集在 Open-Meteo 上提供完整的氣壓層資料,GEFS 沒有。
 UPPER_SYSTEM_IDS = ("ecmwf_ifs025", "ecmwf_aifs025")
 CROSS_SYSTEM_ID = "ecmwf_ifs025"
 

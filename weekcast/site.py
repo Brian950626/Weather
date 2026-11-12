@@ -221,7 +221,7 @@ def build_page(sections: list[tuple[str, str]], generated: datetime, failed: lis
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'
         f"<style>{CSS}</style></head><body><main>"
         f'<nav role="tablist">{tabs}</nav>{body}{missing}'
-        f'<footer>更新時間 {stamp} · 資料:Open-Meteo Ensemble API(ECMWF、GEFS、GEPS、ICON、AIFS)· '
+        f'<footer>更新時間 {stamp} · 資料:Open-Meteo Ensemble API(ECMWF、GEFS、AIFS)· '
         "數值為系集中位數;信心與高空研判是經驗法則,不是官方預報,颱風與災害天氣請以中央氣象署為準 · "
         f'<a href="data.json">data.json</a> · <a href="{REPO_URL}">原始碼與說明</a></footer>'
         f'</main><div id="tip"></div><script>{JS}</script></body></html>'
