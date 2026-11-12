@@ -27,6 +27,8 @@ from .systems import (
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 USER_AGENT = f"weekcast/{__version__}"
+MINUTE_WAIT = 62  # 秒;Open-Meteo 的每分鐘額度
+MAX_MINUTE_WAITS = 4
 
 # 常用地名直接內建座標,不必查詢(Open-Meteo 的地名查詢對中文支援有限)。
 KNOWN_PLACES: dict[str, tuple[float, float]] = {
@@ -69,7 +71,9 @@ def _get_json(url: str, params: dict, timeout: float = 60, retries: int = 3) -> 
     full = url + "?" + urllib.parse.urlencode(params)
     request = urllib.request.Request(full, headers={"User-Agent": USER_AGENT})
     last = "unknown error"
-    for attempt in range(retries):
+    minute_waits = 0
+    attempt = 0
+    while attempt < retries:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -79,13 +83,19 @@ def _get_json(url: str, params: dict, timeout: float = 60, retries: int = 3) -> 
             except (ValueError, UnicodeDecodeError):
                 reason = ""
             last = f"HTTP {err.code} {reason}".strip()
-            # 4xx 重試沒有意義(參數錯誤或每日額度用完)。
+            # 每分鐘額度用完:等額度恢復再試。高空剖面一次抓很多點,連續查幾個地點就會碰到。
+            if err.code == 429 and "minutely" in reason.lower() and minute_waits < MAX_MINUTE_WAITS:
+                minute_waits += 1
+                time.sleep(MINUTE_WAIT)
+                continue
+            # 其他 4xx 重試沒有意義(參數錯誤或每日額度用完)。
             if 400 <= err.code < 500:
                 break
         except (urllib.error.URLError, TimeoutError, ValueError) as err:
             last = str(err)
-        if attempt < retries - 1:
-            time.sleep(2 * 2**attempt)
+        attempt += 1
+        if attempt < retries:
+            time.sleep(2 * 2 ** (attempt - 1))
     raise FetchError(f"{urllib.parse.urlparse(url).netloc}: {last}")
 
 
