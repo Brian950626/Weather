@@ -64,6 +64,9 @@ PROFILE_VARS = (
     "temperature_925hPa",
     "wind_speed_925hPa",
     "wind_direction_925hPa",
+    # 以下兩項只有 ECMWF IFS 系集提供(AIFS 回傳空值,解析時會自動略過)
+    "total_column_integrated_water_vapour",  # 可降水量 PWAT,kg/m² = mm
+    "cape",  # 對流可用位能,J/kg
 )
 
 # 十字剖面:沿測站緯度的東西向(找槽脊)與沿測站經度的南北向(找噴流軸)

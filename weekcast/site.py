@@ -2,6 +2,9 @@
 
 輸出 index.html(所有地點在同一頁,以分頁切換)與 data.json(同一份資料的
 機器可讀版本)。由 .github/workflows/pages.yml 定時執行並發布到 GitHub Pages。
+
+data.json 另外帶著最近幾次執行的預報摘要(runs)。下次執行時用 --previous 把上一次
+發布的 data.json 讀回來,就能列出預報是連續往同方向修正,還是來回擺盪。
 """
 
 from __future__ import annotations
@@ -14,9 +17,10 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import analysis, client, periods, report, upper
+from . import analysis, client, history, periods, report, upper
 
 DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
+KEEP_RUNS = 16  # data.json 裡每個地點保留幾次執行的摘要(每 6 小時一次,約 4 天)
 REPO_URL = "https://github.com/Brian950626/Weather"
 
 CSS = """
@@ -221,19 +225,6 @@ def _surface_rows(forecast) -> list[list[str]]:
     return rows
 
 
-def _upper_rows(rows) -> list[list[str]]:
-    out = [["日期", "250 風", "噴流軸", "輻散", "500 槽脊", "高度 m", "700 濕度", "850 溫/濕/風", "平流", "925 風", "K"]]
-    for r in rows:
-        low = "–" if r.t850 is None or r.rh850 is None else f"{r.t850:.0f}°C {r.rh850:.0f}% {report._wind(r.dir850, r.wind850)}"
-        out.append(
-            [report._label(r.day), report._wind(r.dir250, r.wind250), report._jet(r), report._signed(r.div250), report._flow(r),
-             "–" if r.z500 is None else f"{r.z500:.0f}" + (" 副高" if r.subtropical_high else ""),
-             "–" if r.rh700 is None else f"{r.rh700:.0f}%", low, report._signed(r.tadv850),
-             report._wind(r.dir925, r.wind925), "–" if r.k is None else f"{r.k:.0f}"]
-        )
-    return out
-
-
 def _period_grid(rows) -> str:
     """每天一列、四個時段各一格;底部的橫條長度是降雨機率。"""
     head = "".join(f"<th>{name} {start:02d}–{end:02d}</th>" for name, start, end in periods.PERIODS)
@@ -242,8 +233,11 @@ def _period_grid(rows) -> str:
         tds = [f"<td>{esc(report._label(day))}</td>"]
         for name, _, _ in periods.PERIODS:
             c = cells.get(name)
-            if c is None or c.temp is None or c.pop is None:
+            if c is None or c.temp is None:
                 tds.append("<td>–</td>")
+                continue
+            if c.pop is None or c.precip is None:  # 資料沒有涵蓋到這個時段結束,雨量不完整
+                tds.append(f'<td class="cell"><b>{c.temp.p50:.0f}°</b></td>')
                 continue
             tip = (
                 f"{report._label(day)} {name}\n氣溫 {c.temp.p50:.0f}°C(範圍 {c.temp.p10:.0f}–{c.temp.p90:.0f})\n"
@@ -323,8 +317,39 @@ load();setInterval(load,3e5);
 """
 
 
-def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7, period_raw: dict | None = None) -> tuple[str, dict]:
-    """由原始資料產生一個地點的 HTML 區塊與 JSON 資料。"""
+def load_previous(path: Path | None) -> dict[str, list[dict]]:
+    """讀取上一次發布的 data.json,回傳 {地名: 先前各次執行的摘要}。讀不到就當作沒有。
+
+    舊版的 data.json 沒有 runs,就用它當時的逐日預報湊出一筆,第一次也能比較。
+    """
+    if path is None:
+        return {}
+    try:
+        old = json.loads(Path(path).read_text(encoding="utf-8"))
+        if isinstance(old.get("runs"), dict):
+            return {name: [r for r in rows if isinstance(r, dict)] for name, rows in old["runs"].items() if isinstance(rows, list)}
+        return {
+            name: [{"at": old["generated"], "days": {d["day"]: {"tmax": d["tmax"]["p50"], "tmin": d["tmin"]["p50"], "pop": d["pop"]} for d in place["days"]}}]
+            for name, place in old["places"].items()
+        }
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def build_place(
+    name: str,
+    raw: dict,
+    upper_raw: dict | None,
+    days: int = 7,
+    period_raw: dict | None = None,
+    previous_runs: list[dict] | None = None,
+    now: datetime | None = None,
+) -> tuple[str, dict]:
+    """由原始資料產生一個地點的 HTML 區塊與 JSON 資料。
+
+    previous_runs 是這個地點先前各次執行的摘要;JSON 資料的 runs 是加上這一次之後的結果。
+    """
+    now = now or datetime.now(timezone.utc)
     ens = analysis.parse(raw)
     forecast = analysis.daily_forecast(ens, days)
     if not forecast:
@@ -369,8 +394,9 @@ def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7, per
     if upper_days:
         parts += [
             "<h2>高空對地面的影響</h2>" + _list(report.upper_impact(upper_days, forecast, lat < 0)),
-            '<h2>高空分析</h2><div class="card"><p class="sub">ECMWF 與 AIFS 系集中位數;風速 m/s,輻散 10⁻⁵/s,平流 °C/日</p>'
-            + _table(_upper_rows(upper_days)) + "</div>",
+            '<h2>高空分析</h2><div class="card"><p class="sub">ECMWF 與 AIFS 系集中位數;風速 m/s,輻散 10⁻⁵/s,平流 °C/日,'
+            "PWAT(可降水量)mm,CAPE J/kg;925 風的「西→東北」表示當天低層風向轉變(鋒面通過)</p>"
+            + _table(report.upper_rows(upper_days)) + "</div>",
         ]
     if signal_list:
         by_day: dict[str, list[str]] = {}
@@ -380,7 +406,14 @@ def build_place(name: str, raw: dict, upper_raw: dict | None, days: int = 7, per
     notes = report.uncertainty(forecast)
     if notes:
         parts.append("<h2>不確定性</h2>" + _list(notes))
-    data = report.to_json(name, ens, forecast, signal_list, None, upper_days, period_list)
+    comparison = history.compare_runs(previous_runs or [], forecast, now)
+    if comparison:
+        parts.append(
+            f"<h2>預報趨勢</h2><p class=\"sub\">與 {comparison.age_hours:.0f} 小時前的預報比較;"
+            "連續幾次往同方向修正的趨勢較可信,來回擺盪代表模式還沒有定論</p>" + _list(report.comparison_lines(comparison))
+        )
+    data = report.to_json(name, ens, forecast, signal_list, comparison, upper_days, period_list)
+    data["runs"] = history.extend(previous_runs or [], forecast, now, KEEP_RUNS)
     return "".join(parts), data
 
 
@@ -426,9 +459,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("_site"), help="輸出資料夾")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--from-file", metavar="PATH", help="改讀存下的原始資料(只產生一個地點,不連網)")
+    parser.add_argument("--previous", metavar="PATH", type=Path, help="上一次發布的 data.json,用來比較預報趨勢")
     args = parser.parse_args(argv)
 
-    sections, data, failed = [], {}, []
+    now = datetime.now(timezone.utc)
+    previous = load_previous(args.previous)
+    sections, data, runs, failed = [], {}, {}, []
     for name in args.places[:1] if args.from_file else args.places:
         try:
             if args.from_file:
@@ -448,22 +484,24 @@ def main(argv: list[str] | None = None) -> int:
                 except client.FetchError as err:
                     print(f"{name}:沒有時段資料({err})", file=sys.stderr)
                     period_raw = None
-            block, payload = build_place(name, raw, upper_raw, args.days, period_raw)
+            block, payload = build_place(name, raw, upper_raw, args.days, period_raw, previous.get(name), now)
         except (client.FetchError, ValueError, OSError) as err:
             print(f"{name}:略過({err})", file=sys.stderr)
             failed.append(name)
+            if previous.get(name):  # 這次沒抓到,先前的紀錄仍要留著,下次才接得上
+                runs[name] = previous[name]
             continue
+        runs[name] = payload.pop("runs")
         sections.append((name, block, payload["location"].get("latitude") or 0.0, payload["location"].get("longitude") or 0.0))
         data[name] = payload
     if not sections:
         print("沒有任何地點成功,不產生網頁", file=sys.stderr)
         return 1
-    now = datetime.now(timezone.utc)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "index.html").write_text(build_page(sections, now, failed), encoding="utf-8")
     write_engine(args.out / "weekcast.zip")
     (args.out / "data.json").write_text(
-        json.dumps({"generated": now.isoformat(), "places": data}, ensure_ascii=False), encoding="utf-8"
+        json.dumps({"generated": now.isoformat(), "places": data, "runs": runs}, ensure_ascii=False), encoding="utf-8"
     )
     print(f"已產生 {args.out}/index.html({len(sections)} 個地點)")
     return 0

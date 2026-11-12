@@ -32,9 +32,12 @@ jobs:
           python-version: "3.12"
       - name: 測試
         run: python -m unittest -q
-      - name: 產生網頁
-        run: python -m weekcast.site --out _site $PLACES
       - uses: actions/configure-pages@v5
+        id: pages
+      - name: 取得上一次發布的預報(用來比較預報趨勢;第一次發布時沒有,略過)
+        run: curl -fsSL --max-time 30 -o previous.json "${{ steps.pages.outputs.base_url }}/data.json" || rm -f previous.json
+      - name: 產生網頁
+        run: python -m weekcast.site --out _site --previous previous.json $PLACES
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

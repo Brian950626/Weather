@@ -199,13 +199,18 @@ def cross_params(points: list[dict], days: int = 7, timezone: str = "GMT") -> di
 
 
 def period_params(latitude: float, longitude: float, days: int = 7, timezone: str = "GMT") -> dict:
+    """時段預報的查詢參數。
+
+    雨量是往前累積的,最後一天晚上(18–24 時)的最後一筆標示在隔天 00:00,
+    所以多抓一天。
+    """
     return {
         "latitude": f"{latitude:.4f}",
         "longitude": f"{longitude:.4f}",
         "hourly": ",".join(PERIOD_VARS),
         "models": ",".join(s.api_id for s in SYSTEMS),
         "timezone": timezone,
-        "forecast_days": days,
+        "forecast_days": days + 1,
         "temporal_resolution": "hourly_3",
     }
 
