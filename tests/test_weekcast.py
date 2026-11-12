@@ -331,6 +331,14 @@ class CliTest(unittest.TestCase):
         place = client.geocode("臺北市")
         self.assertAlmostEqual(place.latitude, 25.04)
         self.assertEqual(client.geocode("高雄").longitude, 120.30)
+        self.assertEqual(client.geocode("枋寮").latitude, 22.37)
+
+    def test_place_with_explicit_coordinates(self):
+        place = client.geocode("恆春@22.00,120.75")
+        self.assertEqual((place.name, place.latitude, place.longitude), ("恆春", 22.0, 120.75))
+        for bad in ("恆春@abc", "恆春@22", "恆春@99,120"):
+            with self.assertRaises(client.FetchError):
+                client.geocode(bad)
 
 
 def make_upper(days=2, z500=None, u250=None, v250=None, t850=None, site=None, latitude=40.0):
@@ -676,6 +684,9 @@ class SiteTest(unittest.TestCase):
 
         page = site.build_page([("<b>x</b>", "")], datetime(2026, 1, 1, tzinfo=timezone.utc), ["a&b"])
         self.assertNotIn("<b>x</b>", page)
+        self.assertIn('data-generated="2026-01-01T00:00:00+00:00"', page)
+        self.assertIn('id="notes"', page)
+        self.assertIn("這不是官方預報", page)
         self.assertIn("a&amp;b", page)
 
     def test_no_page_when_every_place_fails(self):
@@ -822,6 +833,52 @@ class PeriodTest(unittest.TestCase):
         self.assertIn('id="radar"', page)
         self.assertIn('data-lat="25.0"', page)
         self.assertEqual(len(data["places"]["台北"]["periods"]), 28)
+
+
+class BrowserSearchTest(unittest.TestCase):
+    """網頁搜尋欄用的進入點:抓資料的方式不同,分析必須和命令列相同。"""
+
+    def run_forecast(self, fail=()):
+        import asyncio
+        from weekcast import browser
+
+        bundle = client.load_raw(FIXTURE)
+        asked = []
+
+        async def get(params):
+            asked.append(params)
+            kind = "cross" if "," in params["latitude"] else "profile" if "wind_speed_unit" in params else (
+                "periods" if params.get("temporal_resolution") == "hourly_3" else "surface")
+            if kind in fail:
+                raise RuntimeError("HTTP 429")
+            return {"surface": bundle["surface"], "profile": bundle["upper"]["profile"],
+                    "cross": bundle["upper"]["cross"]["data"], "periods": bundle["periods"]}[kind]
+
+        return asyncio.run(browser.forecast("枋寮", 25.05, 121.53, 7, get)), asked
+
+    def test_same_sections_as_the_scheduled_page(self):
+        block, asked = self.run_forecast()
+        self.assertEqual(len(asked), 4)
+        for needle in ("時段預報", "高空分析", "逐日預報", "133 個系集成員"):
+            self.assertIn(needle, block)
+        self.assertEqual(asked[1]["timezone"], "Asia/Taipei")  # 高空資料沿用地面資料的時區
+        self.assertTrue(client.url_for(asked[0]).startswith("https://ensemble-api.open-meteo.com/v1/ensemble?latitude=25.05"))
+
+    def test_upper_air_failure_still_gives_surface_forecast(self):
+        block, _ = self.run_forecast(fail=("cross", "periods"))
+        self.assertIn("逐日預報", block)
+        self.assertNotIn("高空分析", block)
+        self.assertNotIn("時段預報", block)
+
+    def test_engine_archive_contains_the_package(self):
+        import zipfile
+        from weekcast import site
+
+        with tempfile.TemporaryDirectory() as tmp:
+            site.write_engine(Path(tmp) / "weekcast.zip")
+            names = zipfile.ZipFile(Path(tmp) / "weekcast.zip").namelist()
+        for module in ("__init__", "analysis", "browser", "client", "periods", "report", "site", "systems", "upper"):
+            self.assertIn(f"weekcast/{module}.py", names)
 
 
 if __name__ == "__main__":

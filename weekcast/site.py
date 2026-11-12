@@ -13,12 +13,13 @@ import argparse
 import html
 import json
 import sys
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import analysis, client, history, periods, report, upper
 
-DEFAULT_PLACES = ("台北", "台中", "高雄", "花蓮")
+DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
 KEEP_RUNS = 16  # data.json 裡每個地點保留幾次執行的摘要(每 6 小時一次,約 4 天)
 REPO_URL = "https://github.com/Brian950626/Weather"
 
@@ -35,6 +36,11 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 8px}
 nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
 nav button{font:inherit;padding:6px 16px;border:1px solid var(--axis);border-radius:999px;background:var(--surface);color:var(--ink);cursor:pointer}
 nav button[aria-selected=true]{background:var(--ink);color:var(--page);border-color:var(--ink)}
+nav .x{margin-left:4px;opacity:.6}nav .x:hover{opacity:1}
+#find{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 16px}
+#find input{font:inherit;flex:1 1 220px;max-width:340px;padding:7px 12px;border:1px solid var(--axis);border-radius:8px;background:var(--surface);color:var(--ink)}
+#find button,#hits button{font:inherit;padding:6px 14px;border:1px solid var(--axis);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer}
+#hits{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}#fmsg{font-size:13px;color:var(--ink2)}
 section.place{display:none}section.place.on{display:block}
 .card{background:var(--surface);border:1px solid var(--grid);border-radius:10px;padding:14px 16px;margin:12px 0}
 .days{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px}
@@ -68,16 +74,72 @@ footer{color:var(--ink2);font-size:12px;margin-top:32px}a{color:var(--series)}
 """
 
 JS = """
-const tabs=[...document.querySelectorAll('nav button')],secs=[...document.querySelectorAll('section.place')];
-function show(i){tabs.forEach((b,j)=>b.setAttribute('aria-selected',i===j));secs.forEach((s,j)=>s.classList.toggle('on',i===j));
-try{localStorage.setItem('place',i)}catch(e){}if(window.radarMove)radarMove()}
-tabs.forEach((b,i)=>b.addEventListener('click',()=>show(i)));
-let start=0;try{start=+localStorage.getItem('place')||0}catch(e){}show(start<tabs.length?start:0);
-const tip=document.getElementById('tip');
-document.querySelectorAll('[data-tip]').forEach(el=>{
-el.addEventListener('mousemove',e=>{tip.textContent=el.dataset.tip;tip.style.display='block';
+const nav=document.querySelector('nav'),main=document.querySelector('main'),tip=document.getElementById('tip');
+const tabs=()=>[...nav.querySelectorAll('button[role=tab]')],secs=()=>[...document.querySelectorAll('section.place')];
+function show(i){tabs().forEach((b,j)=>b.setAttribute('aria-selected',i===j));secs().forEach((s,j)=>s.classList.toggle('on',i===j));
+try{localStorage.setItem('place',i)}catch(e){}if(window.radarMove)radarMove();
+const s=secs()[i];if(s&&s.dataset.pending)compute(s)}
+nav.addEventListener('click',e=>{const x=e.target.closest('.x');if(x){drop(x.parentElement);return}
+const b=e.target.closest('button[role=tab]');if(b)show(tabs().indexOf(b))});
+document.addEventListener('mousemove',e=>{const el=e.target.closest&&e.target.closest('[data-tip]');
+if(!el){tip.style.display='none';return}tip.textContent=el.dataset.tip;tip.style.display='block';
 tip.style.left=Math.min(e.clientX+14,innerWidth-tip.offsetWidth-8)+'px';tip.style.top=(e.clientY+14)+'px'});
-el.addEventListener('mouseleave',()=>tip.style.display='none')});
+
+// ---- 自動更新:定時檢查有沒有新的預報,有就重新載入,不必手動重新整理 ----
+const fresh=document.getElementById('fresh'),built=fresh.dataset.generated;
+const local=t=>new Date(t).toLocaleString([], {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+function stampText(extra){fresh.textContent='資料更新時間 '+local(built)+'。本頁每 10 分鐘自動檢查,有新預報會自動更新,不必手動重新整理'+(extra||'。')}
+stampText();
+async function refresh(){try{const d=await(await fetch('data.json?t='+Date.now(),{cache:'no-store'})).json();
+ if(d.generated&&d.generated!==built&&new Date(d.generated)>new Date(built)){location.replace(location.pathname+'?v='+Date.parse(d.generated));return}
+ stampText('(上次檢查 '+local(Date.now())+')。')}catch(e){stampText('(剛才檢查失敗,稍後會再試;也可以手動重新整理)。')}}
+setInterval(refresh,6e5);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+
+// ---- 搜尋任意地點:在瀏覽器裡執行同一份 Python 分析程式 ----
+const form=document.getElementById('find'),box=document.getElementById('q'),hits=document.getElementById('hits'),msg=document.getElementById('fmsg');
+const esc=t=>t.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let py=null;
+async function engine(){if(py)return py;py=(async()=>{
+ const base='https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+ const {loadPyodide}=await import(base+'pyodide.mjs');const p=await loadPyodide({indexURL:base});
+ p.unpackArchive(await(await fetch('weekcast.zip')).arrayBuffer(),'zip');
+ p.runPython('from weekcast.browser import forecast');return p})();
+ py.catch(()=>{py=null});return py}
+function saved(){try{return JSON.parse(localStorage.getItem('custom')||'[]')}catch(e){return []}}
+function keep(list){try{localStorage.setItem('custom',JSON.stringify(list))}catch(e){}}
+function addTab(name,lat,lon){
+ const b=document.createElement('button');b.setAttribute('role','tab');b.dataset.custom='1';
+ b.innerHTML=esc(name)+' <span class="x" title="移除" aria-label="移除">×</span>';nav.appendChild(b);
+ const s=document.createElement('section');s.className='place';s.dataset.lat=lat;s.dataset.lon=lon;s.dataset.name=name;s.dataset.pending='1';
+ s.innerHTML='<h1>'+esc(name)+' 一週天氣預報</h1><p class="sub wait"></p>';
+ const last=secs().pop();last.after(s);return tabs().length-1}
+function drop(b){const i=tabs().indexOf(b),s=secs()[i];keep(saved().filter(p=>!(p.name===s.dataset.name&&p.lat==s.dataset.lat)));
+ b.remove();s.remove();show(0)}
+async function compute(s){delete s.dataset.pending;const w=s.querySelector('.wait');
+ try{w.textContent='正在載入分析程式(第一次約需 10–20 秒)…';const p=await engine();
+  w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析…';
+  const html=await p.globals.get('forecast')(s.dataset.name,+s.dataset.lat,+s.dataset.lon);
+  s.innerHTML='<h1>'+esc(s.dataset.name)+' 一週天氣預報</h1>'+html+'<p class="sub">這個地點是在你的瀏覽器裡即時計算的,重新整理頁面後點選分頁會再算一次。</p>'}
+ catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+String(e.message||e).split('\\n').pop()+'。稍等一分鐘後再點一次分頁重試。'}}
+function open(name,lat,lon){hits.innerHTML='';msg.textContent='';box.value='';
+ const list=saved();if(!list.some(p=>p.name===name&&p.lat==lat)){list.push({name,lat,lon});keep(list)}
+ show(addTab(name,lat,lon))}
+form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.trim();hits.innerHTML='';if(!q)return;
+ const m=q.match(/^(-?\\d+(?:\\.\\d+)?)\\s*[,,\\s]\\s*(-?\\d+(?:\\.\\d+)?)$/);
+ if(m&&Math.abs(+m[1])<=90&&Math.abs(+m[2])<=180){open((+m[1]).toFixed(2)+', '+(+m[2]).toFixed(2),+m[1],+m[2]);return}
+ msg.textContent='搜尋中…';
+ try{const d=await(await fetch('https://photon.komoot.io/api/?limit=8&lat=23.7&lon=121&q='+encodeURIComponent(q))).json();
+  const seen=new Set(),out=[];
+  for(const f of d.features||[]){const p=f.properties,[lon,lat]=f.geometry.coordinates;
+   const where=[p.city,p.county,p.state,p.country].filter((v,i,a)=>v&&v!==p.name&&a.indexOf(v)===i).join(' · ');
+   const key=lat.toFixed(1)+','+lon.toFixed(1);if(seen.has(key))continue;seen.add(key);out.push({name:p.name||q,where,lat,lon})}
+  if(!out.length){msg.textContent='找不到「'+q+'」。可以改輸入座標,例如 22.37,120.59';return}
+  msg.textContent='請選擇:';
+  out.slice(0,6).forEach(o=>{const b=document.createElement('button');b.type='button';
+   b.textContent=o.name+(o.where?'('+o.where+')':'');b.addEventListener('click',()=>open(o.name,+o.lat.toFixed(4),+o.lon.toFixed(4)));hits.appendChild(b)})}
+ catch(err){msg.textContent='地名搜尋服務暫時無法使用。可以改輸入座標,例如 22.37,120.59'}});
+saved().forEach(p=>addTab(p.name,p.lat,p.lon));
+let start=0;try{start=+localStorage.getItem('place')||0}catch(e){}show(start<tabs().length?start:0);
 """
 
 esc = html.escape
@@ -188,6 +250,22 @@ def _period_grid(rows) -> str:
         body.append("<tr>" + "".join(tds) + "</tr>")
     return f'<div class="scroll"><table class="grid"><thead><tr><th>日期</th>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
+
+SEARCH_HTML = """<form id="find" role="search"><input id="q" type="search" autocomplete="off"
+placeholder="搜尋其他地點,例如 恆春、Tokyo 或 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
+<span id="fmsg"></span><div id="hits"></div></form>"""
+
+NOTES_HTML = """<section id="notes"><h2>注意事項</h2><div class="card"><ul>
+<li><b>這不是官方預報。</b>颱風、豪雨、寒流等災害性天氣,請以中央氣象署的警特報為準。</li>
+<li><b>越後面的日子越不準。</b>每天的「信心」是依各模式是否一致算出來的經驗分數,不是命中率;信心低代表模式之間看法分歧。</li>
+<li><b>時段預報比整天的預報更容易錯開。</b>鋒面晚到半天,整天的預報仍然對,上午、下午卻會整個對調。三天以後的時段只當參考。</li>
+<li><b>降雨機率高不代表雨大。</b>請一起看雨量,以及「高空對地面的影響」裡是否寫著淺層降雨。</li>
+<li><b>解析度約 25 公里。</b>相鄰鄉鎮的結果會很接近;落山風、山區午後雷陣雨、海陸風這類局部現象,模式解析不出來。</li>
+<li><b>氣溫沒有用測站觀測校正。</b>山區與海邊的誤差會比平地大。</li>
+<li><b>接下來 1–3 小時會不會下雨,請看上方的即時雷達回波</b>,它比預報準;雷達圖來自外部服務,偶爾可能載入不到。</li>
+<li><b>預設城市每 6 小時更新一次</b>(約台灣時間 03、09、15、21 時之後),有時會延後幾十分鐘。</li>
+<li><b>用搜尋欄查的地點不會自動更新</b>,每次點開分頁時才重新計算,第一次約需 10–20 秒。</li>
+</ul></div></section>"""
 
 RADAR_HTML = """<section id="radar"><h2>即時雷達回波</h2><div class="card">
 <div class="bar"><button data-src="rv" aria-pressed="true">全球合成</button><button data-src="jma">日本氣象廳</button>
@@ -344,6 +422,7 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str]) ->
     sections = [(s[0], s[1], *(s[2:4] if len(s) >= 4 else (None, None))) for s in sections]
     radar = all(lat is not None for _, _, lat, _ in sections)
     stamp = generated.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    iso = generated.astimezone(timezone.utc).isoformat()
     tabs = "".join(f'<button role="tab">{esc(s[0])}</button>' for s in sections)
     body = "".join(
         f'<section class="place"' + (f' data-lat="{lat}" data-lon="{lon}"' if radar else "") + f"><h1>{esc(name)} 一週天氣預報</h1>{block}</section>"
@@ -356,8 +435,8 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str]) ->
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'
         + (f'<link rel="stylesheet" href="{leaflet}.css">' if radar else "")
         + f"<style>{CSS}</style></head><body><main>"
-        f'<nav role="tablist">{tabs}</nav>{body}{RADAR_HTML if radar else ""}{missing}'
-        f'<footer>更新時間 {stamp} · 資料:Open-Meteo Ensemble API(ECMWF、GEFS、AIFS)· '
+        f'<nav role="tablist">{tabs}</nav>{SEARCH_HTML}<p class="sub" id="fresh" data-generated="{iso}">資料更新時間 {stamp}</p>{body}{RADAR_HTML if radar else ""}{NOTES_HTML}{missing}'
+        f'<footer>資料:Open-Meteo Ensemble API(ECMWF、GEFS、AIFS)· '
         "數值為系集中位數;信心與高空研判是經驗法則,不是官方預報,颱風與災害天氣請以中央氣象署為準 · "
         f'<a href="data.json">data.json</a> · <a href="{REPO_URL}">原始碼與說明</a></footer>'
         '</main><div id="tip"></div>'
@@ -366,9 +445,17 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str]) ->
     )
 
 
+def write_engine(path: Path) -> None:
+    """把分析程式打包,讓網頁的搜尋功能在瀏覽器裡執行同一份程式。"""
+    source = Path(__file__).parent
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file in sorted(source.glob("*.py")):
+            archive.write(file, f"weekcast/{file.name}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="weekcast.site", description="產生靜態預報網頁")
-    parser.add_argument("places", nargs="*", default=list(DEFAULT_PLACES), help="地名(預設:台北 台中 高雄 花蓮)")
+    parser.add_argument("places", nargs="*", default=list(DEFAULT_PLACES), help="地名(預設:枋寮 台北 台中 高雄 花蓮)")
     parser.add_argument("--out", type=Path, default=Path("_site"), help="輸出資料夾")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--from-file", metavar="PATH", help="改讀存下的原始資料(只產生一個地點,不連網)")
@@ -412,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "index.html").write_text(build_page(sections, now, failed), encoding="utf-8")
+    write_engine(args.out / "weekcast.zip")
     (args.out / "data.json").write_text(
         json.dumps({"generated": now.isoformat(), "places": data, "runs": runs}, ensure_ascii=False), encoding="utf-8"
     )
