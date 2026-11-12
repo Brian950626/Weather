@@ -24,7 +24,7 @@ def _pad(text: str, width: int, right: bool = False) -> str:
 
 def _label(day: str) -> str:
     d = date.fromisoformat(day)
-    return f"{d.month}/{d.day} {'一二三四五六日'[d.weekday()]}"
+    return f"{d.month}/{d.day}({'一二三四五六日'[d.weekday()]})"
 
 
 def _range(spread, unit: str = "") -> str:
@@ -114,7 +114,7 @@ def highlights(forecast: list[DayForecast]) -> list[str]:
 def uncertainty(forecast: list[DayForecast]) -> list[str]:
     out = []
     for fc in forecast:
-        if fc.confidence_label == "高":
+        if fc.confidence >= 70:
             continue
         notes = []
         if fc.scenario:
@@ -126,7 +126,7 @@ def uncertainty(forecast: list[DayForecast]) -> list[str]:
         if fc.pop_gap >= 0.4 and len(fc.system_pop) > 1:
             parts = " / ".join(f"{n} {v:.0%}" for n, v in sorted(fc.system_pop.items(), key=lambda kv: -kv[1]))
             notes.append(f"各模式降雨機率 {parts}")
-        if not notes and fc.confidence_label == "低":
+        if not notes and fc.confidence < 45:
             notes.append(f"成員離散度大(高溫 {fc.tmax.p10:.0f}–{fc.tmax.p90:.0f}°C、降雨機率 {fc.pop:.0%})")
         if notes:
             out.append(f"{_label(fc.day)}:" + ";".join(notes) + "。")
@@ -333,6 +333,7 @@ def render(
     comparison: Comparison | None = None,
     upper_days: list[UpperDay] | None = None,
     period_list: list[PeriodForecast] | None = None,
+    brief=None,
 ) -> str:
     meta = ens.meta
     lat, lon = meta.get("latitude") or 0.0, meta.get("longitude") or 0.0
@@ -344,8 +345,10 @@ def render(
         f"{where} · 時區 {meta.get('timezone') or 'UTC'} · 模式格點海拔 {meta.get('elevation') or 0:.0f} m",
         f"資料:{counts} = {total} 個系集成員",
         "",
-        *_table(forecast),
     ]
+    if brief is not None:  # 先講結論:這一週分成哪幾段
+        lines += [brief.lede, *(f"• 時段{'一二三'[s.index - 1]} {s.summary}" for s in brief.stages), ""]
+    lines += _table(forecast)
     if period_list:
         lines += ["", "時段預報(氣溫、天氣、6 小時內降雨機率)", *_grid(period_rows(period_list))]
     lines += ["", "重點", *(f"• {line}" for line in highlights(forecast))]
