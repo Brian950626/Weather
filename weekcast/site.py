@@ -81,6 +81,16 @@ document.addEventListener('mousemove',e=>{const el=e.target.closest&&e.target.cl
 if(!el){tip.style.display='none';return}tip.textContent=el.dataset.tip;tip.style.display='block';
 tip.style.left=Math.min(e.clientX+14,innerWidth-tip.offsetWidth-8)+'px';tip.style.top=(e.clientY+14)+'px'});
 
+// ---- 自動更新:定時檢查有沒有新的預報,有就重新載入,不必手動重新整理 ----
+const fresh=document.getElementById('fresh'),built=fresh.dataset.generated;
+const local=t=>new Date(t).toLocaleString([], {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+function stampText(extra){fresh.textContent='資料更新時間 '+local(built)+'。本頁每 10 分鐘自動檢查,有新預報會自動更新,不必手動重新整理'+(extra||'。')}
+stampText();
+async function refresh(){try{const d=await(await fetch('data.json?t='+Date.now(),{cache:'no-store'})).json();
+ if(d.generated&&d.generated!==built&&new Date(d.generated)>new Date(built)){location.replace(location.pathname+'?v='+Date.parse(d.generated));return}
+ stampText('(上次檢查 '+local(Date.now())+')。')}catch(e){stampText('(剛才檢查失敗,稍後會再試;也可以手動重新整理)。')}}
+setInterval(refresh,6e5);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+
 // ---- 搜尋任意地點:在瀏覽器裡執行同一份 Python 分析程式 ----
 const form=document.getElementById('find'),box=document.getElementById('q'),hits=document.getElementById('hits'),msg=document.getElementById('fmsg');
 const esc=t=>t.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -251,6 +261,18 @@ SEARCH_HTML = """<form id="find" role="search"><input id="q" type="search" autoc
 placeholder="搜尋其他地點,例如 恆春、Tokyo 或 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
 <span id="fmsg"></span><div id="hits"></div></form>"""
 
+NOTES_HTML = """<section id="notes"><h2>注意事項</h2><div class="card"><ul>
+<li><b>這不是官方預報。</b>颱風、豪雨、寒流等災害性天氣,請以中央氣象署的警特報為準。</li>
+<li><b>越後面的日子越不準。</b>每天的「信心」是依各模式是否一致算出來的經驗分數,不是命中率;信心低代表模式之間看法分歧。</li>
+<li><b>時段預報比整天的預報更容易錯開。</b>鋒面晚到半天,整天的預報仍然對,上午、下午卻會整個對調。三天以後的時段只當參考。</li>
+<li><b>降雨機率高不代表雨大。</b>請一起看雨量,以及「高空對地面的影響」裡是否寫著淺層降雨。</li>
+<li><b>解析度約 25 公里。</b>相鄰鄉鎮的結果會很接近;落山風、山區午後雷陣雨、海陸風這類局部現象,模式解析不出來。</li>
+<li><b>氣溫沒有用測站觀測校正。</b>山區與海邊的誤差會比平地大。</li>
+<li><b>接下來 1–3 小時會不會下雨,請看下方的即時雷達回波</b>,它比預報準;雷達圖來自外部服務,偶爾可能載入不到。</li>
+<li><b>預設城市每 6 小時更新一次</b>(約台灣時間 03、09、15、21 時之後),有時會延後幾十分鐘。</li>
+<li><b>用搜尋欄查的地點不會自動更新</b>,每次點開分頁時才重新計算,第一次約需 10–20 秒。</li>
+</ul></div></section>"""
+
 RADAR_HTML = """<section id="radar"><h2>即時雷達回波</h2><div class="card">
 <div class="bar"><button data-src="rv" aria-pressed="true">全球合成</button><button data-src="jma">日本氣象廳</button>
 <button data-src="cwa">中央氣象署</button><button id="rplay">暫停</button><span id="rtime"></span></div>
@@ -367,6 +389,7 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str]) ->
     sections = [(s[0], s[1], *(s[2:4] if len(s) >= 4 else (None, None))) for s in sections]
     radar = all(lat is not None for _, _, lat, _ in sections)
     stamp = generated.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    iso = generated.astimezone(timezone.utc).isoformat()
     tabs = "".join(f'<button role="tab">{esc(s[0])}</button>' for s in sections)
     body = "".join(
         f'<section class="place"' + (f' data-lat="{lat}" data-lon="{lon}"' if radar else "") + f"><h1>{esc(name)} 一週天氣預報</h1>{block}</section>"
@@ -379,8 +402,8 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str]) ->
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'
         + (f'<link rel="stylesheet" href="{leaflet}.css">' if radar else "")
         + f"<style>{CSS}</style></head><body><main>"
-        f'<nav role="tablist">{tabs}</nav>{SEARCH_HTML}{body}{RADAR_HTML if radar else ""}{missing}'
-        f'<footer>更新時間 {stamp} · 資料:Open-Meteo Ensemble API(ECMWF、GEFS、AIFS)· '
+        f'<nav role="tablist">{tabs}</nav>{SEARCH_HTML}<p class="sub" id="fresh" data-generated="{iso}">資料更新時間 {stamp}</p>{body}{RADAR_HTML if radar else ""}{NOTES_HTML}{missing}'
+        f'<footer>資料:Open-Meteo Ensemble API(ECMWF、GEFS、AIFS)· '
         "數值為系集中位數;信心與高空研判是經驗法則,不是官方預報,颱風與災害天氣請以中央氣象署為準 · "
         f'<a href="data.json">data.json</a> · <a href="{REPO_URL}">原始碼與說明</a></footer>'
         '</main><div id="tip"></div>'

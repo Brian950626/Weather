@@ -524,6 +524,9 @@ class SiteTest(unittest.TestCase):
 
         page = site.build_page([("<b>x</b>", "")], datetime(2026, 1, 1, tzinfo=timezone.utc), ["a&b"])
         self.assertNotIn("<b>x</b>", page)
+        self.assertIn('data-generated="2026-01-01T00:00:00+00:00"', page)
+        self.assertIn('id="notes"', page)
+        self.assertIn("這不是官方預報", page)
         self.assertIn("a&amp;b", page)
 
     def test_no_page_when_every_place_fails(self):
