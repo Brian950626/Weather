@@ -1297,5 +1297,63 @@ class ScheduleGuardTest(unittest.TestCase):
         self.assertIn("if: needs.build.outputs.built == 'true'", text)
 
 
+class TownSearchTest(unittest.TestCase):
+    """內建的臺灣鄉鎮市區清單:搜尋不依賴外部服務,結果一定是中文。"""
+
+    def test_all_townships_are_listed_once_within_taiwan(self):
+        from weekcast.towns import TOWNS
+
+        self.assertEqual(len(TOWNS), 368)
+        self.assertEqual(len({(county, town) for county, town, _, _ in TOWNS}), 368)
+        for county, town, lat, lon in TOWNS:
+            self.assertTrue(21.8 < lat < 26.5 and 118.1 < lon < 122.1, (county, town))
+            self.assertNotIn("臺", county + town)
+            self.assertIn(town[-1], "鄉鎮市區")
+
+    def test_names_can_be_typed_several_ways(self):
+        first = lambda q: client.find_towns(q)[0][0]
+        for q in ("東港", "東港鎮", "屏東縣東港鎮", "屏東東港", " 東港 "):
+            self.assertEqual(first(q), "屏東縣東港鎮", q)
+        self.assertEqual(first("臺東市"), "台東縣台東市")  # 臺與台視為相同
+        self.assertEqual(client.find_towns("沒有這個地方"), [])
+        self.assertEqual(client.find_towns(""), [])
+
+    def test_same_named_townships_are_all_offered(self):
+        names = [t[0] for t in client.find_towns("信義")]
+        self.assertEqual(sorted(names), ["南投縣信義鄉", "台北市信義區", "基隆市信義區"])
+
+    def test_coordinates_are_near_the_real_town(self):
+        _, lat, lon = client.find_towns("恆春")[0]
+        self.assertAlmostEqual(lat, 22.0, delta=0.1)
+        self.assertAlmostEqual(lon, 120.75, delta=0.1)
+
+    def test_command_line_lookup_uses_the_list_without_network(self):
+        place = client.geocode("恆春")
+        self.assertEqual((place.name, place.country), ("屏東縣恆春鎮", "台灣"))
+        with self.assertRaises(client.FetchError) as caught:
+            client.geocode("信義區")
+        self.assertIn("請連縣市一起輸入", str(caught.exception))
+        self.assertEqual(client.geocode("台北市信義區").name, "台北市信義區")
+        self.assertEqual(client.geocode("枋寮").latitude, 22.37)  # 原本內建的地點不受影響
+
+    def test_page_carries_the_list_and_chinese_error_messages(self):
+        from weekcast import site
+
+        page = site.build_page([("台北", "", 25.0, 121.5)], datetime(2026, 1, 1, tzinfo=timezone.utc), [])
+        self.assertIn('["屏東縣","東港鎮",22.461,120.474]', page)
+        self.assertNotIn("__TOWNS__", page)
+        self.assertIn("function localHits", page)
+        self.assertIn("氣象資料來源暫時忙線", page)
+        self.assertIn("isComposing", page)  # 注音選字中不觸發搜尋
+
+    def test_engine_archive_includes_the_town_list(self):
+        import zipfile
+        from weekcast import site
+
+        with tempfile.TemporaryDirectory() as tmp:
+            site.write_engine(Path(tmp) / "w.zip")
+            self.assertIn("weekcast/towns.py", zipfile.ZipFile(Path(tmp) / "w.zip").namelist())
+
+
 if __name__ == "__main__":
     unittest.main()
