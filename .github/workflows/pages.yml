@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
   schedule:
-    # 全球模式約每 6 小時更新一次;避開整點
-    - cron: "23 1,7,13,19 * * *"
+    # 目標是大約每 6 小時更新一次。GitHub 的排程常常延後,有時整班跳過,所以改成每小時
+    # 檢查一次:上一次發布還不到 5 小時就直接結束,超過才重算。這樣漏掉一班,下一個小時就補上。
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -25,6 +26,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      built: ${{ steps.site.outputs.built }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,14 +39,21 @@ jobs:
         id: pages
       - name: 取得上一次發布的預報(用來比較預報趨勢;第一次發布時沒有,略過)
         run: curl -fsSL --max-time 30 -o previous.json "${{ steps.pages.outputs.base_url }}/data.json" || rm -f previous.json
-      - name: 產生網頁
-        run: python -m weekcast.site --out _site --previous previous.json $PLACES
+      - name: 產生網頁(排程觸發時,資料還新就略過)
+        id: site
+        run: |
+          fresh=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then fresh="--only-if-older-than 5"; fi
+          python -m weekcast.site --out _site --previous previous.json $fresh $PLACES
+          if [ -f _site/index.html ]; then echo "built=true" >> "$GITHUB_OUTPUT"; else echo "built=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/upload-pages-artifact@v3
+        if: steps.site.outputs.built == 'true'
         with:
           path: _site
 
   deploy:
     needs: build
+    if: needs.build.outputs.built == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

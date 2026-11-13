@@ -1086,30 +1086,33 @@ class PlainSummaryTest(unittest.TestCase):
 
     def test_rainy_day_says_when_and_what_to_bring(self):
         saturday = next(d for d in self.days if d.day == "2026-11-14")
-        self.assertIn("可能會下雨", saturday.weather)
+        self.assertIn("可能下雨(機率 60%)", saturday.weather)
         self.assertIn("主要在下午和晚上", saturday.weather)
         self.assertIn("帶把傘備用", saturday.advice)
-        self.assertIn("低壓帶從西邊靠近", saturday.why)
+        self.assertTrue(saturday.why.startswith("有機會下雨,因為高空有一道低壓帶從西邊靠近"))
         self.assertIn("看法不一致", saturday.caution)
 
     def test_shallow_rain_is_explained_as_light(self):
         sunday = next(d for d in self.days if d.day == "2026-11-15")
-        self.assertIn("雨量不大", sunday.weather)
-        self.assertIn("雲長不高", sunday.why)
+        self.assertIn("地面會濕的小雨(約 5 毫米)", sunday.weather)
+        # 先講會下雨的原因,再講為什麼雨不大
+        self.assertTrue(sunday.why.startswith("會下雨,是因為"))
+        self.assertIn("雲長不高,所以雨不會太大", sunday.why)
         self.assertEqual(sunday.advice, ["出門帶傘"])
 
     def test_cooling_day_gets_a_jacket(self):
         last = next(d for d in self.days if d.day == "2026-11-18")
         self.assertIn("比前一天涼", last.weather)
         self.assertIn("明顯變涼,加件外套", last.advice)
-        self.assertIn("高空其實是穩定的", last.why)  # 高空穩定卻下雨,要解釋清楚
+        # 高空有高壓卻下雨:要說明兩者的關係,不能只把兩件事並列
+        self.assertIn("不過上空有副熱帶高壓,空氣下沉,所以雨不會太大", last.why)
 
     def test_week_summary_tells_the_story_in_order(self):
         week = self.plain.week_summary(self.forecast, self.upper)
-        self.assertEqual(week.headline, "未來一週前好後壞:前面幾天穩定,11/14(六)起轉為有雨。")
-        self.assertEqual(len(week.story), 5)  # 穩定 → 可能有雨 → 有雨 → 可能有雨 → 有雨
+        self.assertEqual(week.headline, "未來一週多雨,只有11/12(四)到11/13(五)、11/17(二)比較穩定。")
+        self.assertEqual(len(week.story), 5)  # 穩定 → 可能下雨 → 下雨 → 穩定 → 下雨
         self.assertTrue(week.story[0].startswith("11/12(四)到11/13(五)天氣穩定"))
-        self.assertIn("容易下雨,而且明顯變涼", week.story[-1])
+        self.assertIn("會下雨,而且明顯變涼", week.story[-1])
         self.assertIn("低壓帶接近", week.cause)
         self.assertEqual(len(week.watch), 2)
         for word in self.JARGON:
@@ -1120,9 +1123,13 @@ class PlainSummaryTest(unittest.TestCase):
         day = lambda i, pop: analysis.DayForecast(**{**fc.__dict__, "day": f"2026-01-0{i + 1}", "lead": i, "pop": pop})
         headline = lambda pops: self.plain.week_summary([day(i, p) for i, p in enumerate(pops)]).headline
         self.assertIn("幾乎不會下雨", headline([0.0, 0.1, 0.05]))
-        self.assertIn("天天都容易下雨", headline([0.9, 0.8, 0.7]))
+        self.assertIn("天天都會下雨", headline([0.9, 0.8, 0.7]))
         self.assertIn("前壞後好", headline([0.9, 0.8, 0.1]))
-        self.assertIn("交替", headline([0.9, 0.1, 0.8, 0.1, 0.9]))
+        self.assertIn("前好後壞", headline([0.1, 0.1, 0.5, 0.9]))
+        # 好壞交替時不能說前好後壞:穩定 → 下雨 → 穩定 → 可能下雨(線上枋寮實際出現過)
+        mixed = headline([0.01, 0.01, 0.75, 0.79, 0.27, 0.08, 0.45])
+        self.assertEqual(mixed, "未來一週大致穩定,只有1/3(六)到1/4(日)、1/7(三)會下雨。")
+        self.assertIn("多雨,只有", headline([0.9, 0.1, 0.8, 0.1, 0.9]))
         self.assertIsNone(self.plain.week_summary([]))
 
     def test_week_summary_leads_the_report_and_the_pages(self):
@@ -1140,7 +1147,30 @@ class PlainSummaryTest(unittest.TestCase):
         self.assertEqual(page.count('class="week"'), 2)  # 總覽頁一塊、地點頁一塊
         overview_page = page[page.index('data-page="overview"'):]
         self.assertLess(overview_page.index('class="week"'), overview_page.index("逐日分區預報"))
-        self.assertIn("前好後壞", data["places"]["台北"]["plain"]["week"]["headline"])
+        self.assertIn("多雨", data["places"]["台北"]["plain"]["week"]["headline"])
+
+    def test_wording_matches_the_sky_labels_on_the_same_page(self):
+        # 表格寫「晴偶陣雨」的日子(降雨機率 20–40%),白話不能說成「可能下雨」
+        for fc, day in zip(self.forecast, self.days):
+            if fc.pop >= 0.7:
+                self.assertTrue(day.weather.startswith("會下雨"), day.weather)
+            elif fc.pop >= 0.4:
+                self.assertTrue(day.weather.startswith("可能下雨"), day.weather)
+            elif fc.pop >= 0.2:
+                self.assertTrue(day.weather.startswith("大致不會下雨,但可能有短暫陣雨"), day.weather)
+
+    def test_every_day_has_advice_and_a_reason_that_fits_the_weather(self):
+        for fc, day in zip(self.forecast, self.days):
+            self.assertTrue(day.advice, day.day)
+            if fc.pop < 0.4:  # 不太會下雨的日子,原因不能以「會下雨」開頭
+                self.assertFalse(day.why.startswith(("會下雨", "有機會下雨")), day.why)
+
+    def test_technical_names_get_plain_words(self):
+        said = self.plain.system_words("高空槽接近 → 鋒面通過、東北季風增強")
+        self.assertEqual(said, "高空有低壓帶靠近,天氣轉不穩定,接著冷暖空氣的交界通過,有雨、之後轉涼;東北風增強,變涼、迎風面有雨")
+        self.assertEqual(self.plain.system_words("沒見過的名稱"), "沒見過的名稱")
+        self.assertEqual([self.plain.rain_words(mm) for mm in (0.2, 3, 10, 20, 60)], ["幾乎沒有雨", "地面會濕的小雨", "需要撐傘的雨", "雨勢明顯", "大雨"])
+        self.assertEqual([self.plain.wind_words(v) for v in (5, 20, 40, 60)], ["微風", "有風", "風偏大", "強風"])
 
     def test_works_without_upper_air_or_periods(self):
         days = self.plain.plain_days(self.forecast)
@@ -1151,6 +1181,7 @@ class PlainSummaryTest(unittest.TestCase):
     def test_dry_sunny_day_advice(self):
         fc = self.forecast[1]
         clear = analysis.DayForecast(**{**fc.__dict__, "pop": 0.02, "cloud": analysis.Spread(10, 20, 30)})
+        self.assertEqual(self.plain._advice(clear, None, None)[0], "不用帶傘")
         self.assertIn("適合戶外活動和曬衣服", self.plain._advice(clear, None, None))
         self.assertIn("天氣晴朗", self.plain._weather(clear, None, None))
 
@@ -1172,6 +1203,98 @@ class PlainSummaryTest(unittest.TestCase):
         self.assertLess(page.index('data-view="verify"'), page.index('data-view="plain"'))
         self.assertIn("怎麼準備:", page)
         self.assertEqual(len(data["places"]["台北"]["plain"]["days"]), 7)
+
+
+class ReadabilityTest(unittest.TestCase):
+    """給一般讀者的版面:白話在前、手機看得到全部、日期有今天明天、資料多舊看得出來。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+        cls.place = cls.page[cls.page.index('<article class="place"'):]
+
+    def test_plain_summary_comes_before_the_professional_one(self):
+        self.assertLess(self.place.index('class="week"'), self.place.index('class="ribbon"'))
+        self.assertLess(self.place.index('class="ribbon"'), self.place.index("這一週分成"))
+        summary_tab = self.place[self.place.index('data-view="summary"'):self.place.index('data-view="daily"')]
+        self.assertIn("這一週分成", summary_tab)  # 專業版的結論收在摘要分頁裡
+
+    def test_technical_stage_names_carry_a_plain_gloss(self):
+        self.assertEqual(self.place.count('<small class="say">'), 3)
+        self.assertIn("高壓籠罩,天氣穩定、偏暖", self.place)
+
+    def test_numbers_are_explained(self):
+        self.assertIn("這些數字怎麼看", self.place)
+        for term, _ in self.site.plain.HOW_TO_READ:
+            self.assertIn(f"<dt>{term}</dt>", self.place)
+
+    def test_days_are_tagged_for_today_and_tomorrow_labels(self):
+        self.assertEqual(self.place.count('class="d d'), 7)
+        self.assertEqual(self.place.count('data-day="2026-11-12"'), 2)  # 時間軸與白話總結
+        self.assertIn("markDays()", self.page)
+        self.assertIn("'今天'", self.page)
+
+    def test_page_reports_how_old_the_data_is(self):
+        self.assertIn("沒有更新,內容可能過時", self.page)
+        self.assertIn("小時前", self.page)
+
+    def test_phone_layout_rules_exist(self):
+        css = self.page[self.page.index("@media (max-width:760px)"):]
+        self.assertIn(".tabs{position:static;flex-wrap:wrap", css)  # 七個分頁都看得到
+        self.assertIn('grid-template-areas:"date wx temp" "pop pop conf"', css)  # 時間軸每天一列
+
+    def test_radar_pin_is_not_stretched_by_chart_styles(self):
+        self.assertIn("#map svg{display:inline;min-width:0;width:auto}", self.page)
+        self.assertIn("ResizeObserver", self.page)
+        self.assertIn('class="sub legend"', self.page)
+
+    def test_about_page_counts_the_tabs_correctly(self):
+        self.assertIn("下面有七個分頁", self.page)
+        self.assertEqual(len(self.site.TABS), 7)
+
+
+class ScheduleGuardTest(unittest.TestCase):
+    """排程每小時檢查一次,資料還新就不重算。"""
+
+    def run_site(self, age_hours, *extra):
+        from weekcast import site
+
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = Path(tmp) / "previous.json"
+            at = datetime.now(timezone.utc) - timedelta(hours=age_hours)
+            previous.write_text(json.dumps({"generated": at.isoformat(), "places": {}}), encoding="utf-8")
+            out = Path(tmp) / "site"
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                code = site.main(["台北", "--out", str(out), "--from-file", FIXTURE, "--previous", str(previous), *extra])
+            return code, (out / "index.html").exists(), said.getvalue()
+
+    def test_fresh_data_is_left_alone(self):
+        code, built, said = self.run_site(2, "--only-if-older-than", "5")
+        self.assertEqual((code, built), (0, False))
+        self.assertIn("這次不重算", said)
+
+    def test_old_data_is_rebuilt(self):
+        self.assertEqual(self.run_site(6, "--only-if-older-than", "5")[:2], (0, True))
+
+    def test_without_the_option_it_always_builds(self):
+        self.assertEqual(self.run_site(0.1)[:2], (0, True))
+
+    def test_unreadable_previous_file_means_build(self):
+        from weekcast import site
+
+        self.assertIsNone(site.previous_age_hours(Path("/nonexistent.json"), datetime.now(timezone.utc)))
+        self.assertIsNone(site.previous_age_hours(None, datetime.now(timezone.utc)))
+
+    def test_workflow_checks_hourly_and_skips_deploy_when_nothing_was_built(self):
+        text = (Path(__file__).parent.parent / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+        self.assertIn('cron: "23 * * * *"', text)
+        self.assertIn("--only-if-older-than 5", text)
+        self.assertIn("if: needs.build.outputs.built == 'true'", text)
 
 
 if __name__ == "__main__":
