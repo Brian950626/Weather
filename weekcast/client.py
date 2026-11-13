@@ -58,6 +58,34 @@ KNOWN_PLACES: dict[str, tuple[float, float]] = {
 }
 
 
+def find_towns(query: str, limit: int = 8) -> list[tuple[str, float, float]]:
+    """在內建的臺灣鄉鎮市區清單裡找地名,回傳 [(縣市+鄉鎮, 緯度, 經度)],最符合的排前面。
+
+    不連網。「臺」與「台」視為相同,可以只打鄉鎮名(東港)、帶後綴(東港鎮)或連縣市
+    一起打(屏東縣東港鎮、屏東東港)。網頁的搜尋欄用同一套規則(見 site.py 的 JS)。
+    """
+    from .towns import TOWNS
+
+    q = query.strip().replace("臺", "台").replace(" ", "")
+    if not q:
+        return []
+    ranked = []
+    for county, town, lat, lon in TOWNS:
+        base = town[:-1]  # 去掉鄉、鎮、市、區
+        forms = (town, base, county + town, county + base, county[:-1] + town, county[:-1] + base)
+        if q in forms:
+            rank = 0
+        elif town.startswith(q) or (county + town).startswith(q):
+            rank = 1
+        elif q in county + town:
+            rank = 2
+        else:
+            continue
+        ranked.append((rank, county + town, lat, lon))
+    ranked.sort(key=lambda r: r[0])
+    return [(label, lat, lon) for _, label, lat, lon in ranked[:limit]]
+
+
 class FetchError(RuntimeError):
     """資料來源無法回應(網路、額度或參數問題)。"""
 
@@ -129,6 +157,13 @@ def geocode(name: str) -> Place:
     if key in KNOWN_PLACES:
         lat, lon = KNOWN_PLACES[key]
         return Place(name.strip(), lat, lon, "台灣")
+    towns = find_towns(name)
+    exact = [t for t in towns if name.strip().replace("臺", "台") in (t[0], t[0][3:], t[0][3:-1])]
+    if len(exact) == 1 or len(towns) == 1:
+        label, lat, lon = (exact or towns)[0]
+        return Place(label, lat, lon, "台灣")
+    if len(exact) > 1:
+        raise FetchError(f"有好幾個「{name}」:{'、'.join(t[0] for t in exact)}。請連縣市一起輸入")
     data = _get_json(GEOCODE_URL, {"name": name.strip(), "count": 1})
     results = data.get("results") or []
     if not results:
