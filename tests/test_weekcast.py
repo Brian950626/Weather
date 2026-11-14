@@ -803,7 +803,7 @@ class SiteTest(unittest.TestCase):
         self.assertIn('<article class="place" data-name="台北"', page)
         self.assertIn("逐日高空分析", page)
         self.assertEqual(page.count('class="d d'), 7)  # 時間軸每天一欄
-        self.assertEqual(page.count("<svg"), 2)
+        self.assertEqual(page.count("<svg viewBox"), 2)  # 兩張圖表(天氣圖示另外算)
         self.assertEqual(len(data["places"]["台北"]["days"]), 7)
         # 四個頁面都在同一個檔案裡,用網址切換;地點頁有六個分頁
         for name in ("overview", "place", "radar", "about"):
@@ -1353,6 +1353,78 @@ class TownSearchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             site.write_engine(Path(tmp) / "w.zip")
             self.assertIn("weekcast/towns.py", zipfile.ZipFile(Path(tmp) / "w.zip").namelist())
+
+
+class WeatherIconTest(unittest.TestCase):
+    """像電視氣象的天氣圖示:太陽、雲、雨滴。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    def test_every_sky_wording_has_an_icon(self):
+        # analysis.describe_sky 會產生的所有用語
+        cloudy, clear = analysis.Spread(90, 90, 90), analysis.Spread(10, 10, 10)
+        rain = lambda mm: analysis.Spread(mm, mm, mm)
+        produced = {
+            analysis.describe_sky(pop, rain(mm), cloud)
+            for pop in (0.05, 0.25, 0.5, 0.9)
+            for mm in (0, 12, 60)
+            for cloud in (clear, analysis.Spread(40, 40, 40), analysis.Spread(70, 70, 70), cloudy, None)
+        }
+        self.assertGreaterEqual(len(produced), 10)
+        for sky in produced:
+            self.assertIn(sky, self.site.ICON_FOR, sky)
+            self.assertIn(self.site.ICON_FOR[sky], self.site.ICON_SHAPES)
+
+    def test_sun_only_on_days_without_overcast_and_drops_only_with_rain(self):
+        shape = lambda sky: self.site.ICON_SHAPES[self.site.ICON_FOR[sky]]
+        for sky in ("晴", "晴時多雲", "晴偶陣雨"):
+            self.assertIn("var(--sun)", shape(sky), sky)
+        for sky in ("多雲", "陰", "有雨", "大雨"):
+            self.assertNotIn("var(--sun)", shape(sky), sky)
+        for sky in ("晴", "晴時多雲", "多雲", "陰"):
+            self.assertNotIn("var(--rain)", shape(sky), sky)
+        drops = lambda sky: shape(sky).count("<line") - (8 if "var(--sun)" in shape(sky) else 0)
+        self.assertLess(drops("可能有雨"), drops("有雨"))
+        self.assertLess(drops("有雨"), drops("大雨"))  # 雨越大,雨滴越多
+
+    def test_icons_are_decorative_and_text_stays(self):
+        self.assertEqual(self.site._icon("怪天氣"), "")
+        icon = self.site._icon("有雨")
+        self.assertIn('aria-hidden="true"', icon)
+        self.assertIn(icon + "有雨</span>", self.page)  # 圖示後面仍有文字
+
+    def test_icons_appear_where_the_weather_is_named(self):
+        place = self.page[self.page.index('<article class="place"'):self.page.index('<section class="page" data-page="radar"')]
+        ribbon = place[place.index('class="ribbon"'):place.index('class="key"')]
+        self.assertEqual(ribbon.count('class="ico"'), 7)  # 時間軸每天一個
+        grid = place[place.index('class="grid"'):]
+        grid = grid[:grid.index("</table>")]
+        # 時段預報:有天氣用語的格子都有圖示(最後一個時段若只有氣溫、沒有雨量資料,就沒有用語)
+        self.assertEqual(grid.count('class="ico"'), grid.count("</b><span>"))
+        self.assertGreaterEqual(grid.count('class="ico"'), 27)
+        self.assertEqual(place.count('<div class="pd"'), 7)
+        self.assertIn('<h3 data-rel><svg class="ico"', place)  # 白話總結每天一個
+        overview = self.page[self.page.index('<section class="page on" data-page="overview"'):self.page.index('<section class="page" data-page="place"')]
+        self.assertEqual(overview.count('class="ico"'), 7)
+
+    def test_sprite_is_defined_once_and_colours_follow_the_theme(self):
+        self.assertEqual(self.page.count('<svg class="sprite"'), 1)
+        for name in self.site.ICON_SHAPES:
+            self.assertEqual(self.page.count(f'<symbol id="i-{name}"'), 1)
+        self.assertEqual(self.page.count("--sun:"), 2)  # 淺色與深色各一組
+        self.assertIn("svg.ico{display:inline-block;min-width:0", self.page)  # 不被圖表的 svg 規則拉寬
+
+    def test_about_page_explains_the_icons(self):
+        about = self.page[self.page.index('<section class="page" data-page="about"'):]
+        self.assertIn("<h2>天氣圖示</h2>", about)
+        self.assertEqual(about[about.index('class="icons"'):about.index("<h2>名詞解釋</h2>")].count('class="ico"'), 9)
 
 
 if __name__ == "__main__":

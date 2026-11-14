@@ -49,11 +49,11 @@ FONTS = "https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&di
 # 配色取自手繪天氣圖的習慣:降雨區塗綠、暖色用紅、冷色用藍、槽線用褐色。
 CSS = """
 :root{--paper:#f1f4f1;--sheet:#fcfdfb;--ink:#17201c;--ink2:#44524b;--muted:#69766e;--line:#d3dbd5;
---rain:#2c7a57;--rain-soft:#d2e7da;--warm:#bf4226;--warm-soft:#f3d8ce;--cold:#2a5ca6;--cold-soft:#d5e0f1;--ochre:#8a5f12;--ochre-soft:#f0e4c6;
+--sun:#e39a0c;--cloud:#a9b6af;--cloud-dark:#6d7a73;--rain:#2c7a57;--rain-soft:#d2e7da;--warm:#bf4226;--warm-soft:#f3d8ce;--cold:#2a5ca6;--cold-soft:#d5e0f1;--ochre:#8a5f12;--ochre-soft:#f0e4c6;
 --kai:"LXGW WenKai TC","BiauKai","DFKai-SB","Kaiti TC",KaiTi,serif;
 --sans:system-ui,-apple-system,"PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif}
 @media (prefers-color-scheme:dark){:root{--paper:#121815;--sheet:#1a221e;--ink:#e8eee9;--ink2:#b9c5bd;--muted:#93a198;--line:#2f3a34;
---rain:#5dbf93;--rain-soft:#1f4a37;--warm:#f08462;--warm-soft:#5a2a1d;--cold:#7fa8ea;--cold-soft:#22375c;--ochre:#d8ae55;--ochre-soft:#4a3a16}}
+--sun:#f3c04a;--cloud:#a3b1a9;--cloud-dark:#70807a;--rain:#5dbf93;--rain-soft:#1f4a37;--warm:#f08462;--warm-soft:#5a2a1d;--cold:#7fa8ea;--cold-soft:#22375c;--ochre:#d8ae55;--ochre-soft:#4a3a16}}
 *{box-sizing:border-box}
 html{scroll-padding-top:60px}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.7 var(--sans);font-variant-numeric:tabular-nums}
@@ -155,6 +155,15 @@ details.how{font-size:14px;color:var(--ink2);margin:8px 0;max-width:46em}
 details.how summary{cursor:pointer;color:var(--ink)}
 .verdict-ok{color:var(--rain);font-weight:600}.verdict-miss{color:var(--warm);font-weight:600}.verdict-fa{color:var(--ochre);font-weight:600}
 svg{display:block;min-width:620px;width:100%}
+svg.sprite{position:absolute;min-width:0;width:0;height:0}
+svg.ico{display:inline-block;min-width:0;width:1.7em;height:1.7em;vertical-align:-.5em;margin-right:.25em;flex:none;overflow:visible}
+.d .wx .ico{display:block;width:44px;height:44px;margin:0 auto 2px}
+.zone .wx .ico{width:30px;height:30px;vertical-align:-9px}
+.grid td.cell .ico{width:24px;height:24px;vertical-align:-7px}
+.pd h3 .ico{width:30px;height:30px;vertical-align:-8px}
+.icons{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px 18px;max-width:60em;margin:10px 0}
+.icons div{display:grid;grid-template-columns:44px 1fr;column-gap:10px;align-items:center}
+.icons .ico{grid-row:span 2;width:44px;height:44px;margin:0}.icons span{font-size:13px;color:var(--ink2)}
 #map svg{display:inline;min-width:0;width:auto}
 svg text{font:12px var(--sans);fill:var(--muted)}
 svg .val{fill:var(--ink2)}svg .gridline{stroke:var(--line)}
@@ -184,7 +193,8 @@ details.nums dl{grid-template-columns:1fr}details.nums dt{margin-top:6px}
 .ribbon{grid-template-columns:1fr;min-width:0}
 .stage{grid-column:auto!important;order:var(--o);border-left:0!important}
 .d{order:var(--o);display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"date wx temp" "pop pop conf";align-items:center;gap:2px 12px;text-align:left;padding:9px 12px;border-left:0!important;border-bottom:1px solid var(--line)}
-.d b{grid-area:date}.d .wx{grid-area:wx;min-height:0;font-weight:600}.d .pop{grid-area:pop}
+.d b{grid-area:date}.d .wx{grid-area:wx;min-height:0;font-weight:600;white-space:nowrap}
+.d .wx .ico{display:inline-block;width:30px;height:30px;margin:0 6px 0 0;vertical-align:-9px}.d .pop{grid-area:pop}
 .tcol{grid-area:temp;height:auto;flex-direction:row;gap:3px;font-size:15px}.tcol s,.tcol i,.rcol{display:none}
 .tcol span:last-of-type::before{content:"/ ";color:var(--muted)}
 .d .conf{grid-area:conf;flex-wrap:nowrap;justify-self:end}.d .conf em{flex-basis:auto;margin-left:5px}
@@ -333,6 +343,72 @@ esc = html.escape
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# 天氣圖示
+# --------------------------------------------------------------------------- #
+
+# 像電視氣象的圖示:太陽、雲、雨滴。每種天氣用語對應一個圖示,文字仍然保留在旁邊,
+# 所以圖示只是輔助(讀屏軟體會略過)。雨滴用綠色,和全站「綠色代表降雨」一致。
+_CLOUD = "M13 34a8 8 0 0 1-.6-16A11 11 0 0 1 33.5 15 9.5 9.5 0 0 1 35 34z"
+_RAYS = "".join(
+    f'<line x1="24" y1="5" x2="24" y2="9.5" transform="rotate({angle} 24 24)"/>' for angle in range(0, 360, 45)
+)
+# 顏色直接寫在圖形的 style 上、用 CSS 變數:<use> 複製出來的圖形吃不到外部樣式表裡
+# 帶祖先條件的選擇器,但行內樣式會跟著複製,變數則依使用處解析,深淺色模式都正確。
+_SUN = f'<g style="fill:var(--sun);stroke:var(--sun);stroke-width:3;stroke-linecap:round"><circle cx="24" cy="24" r="8"/>{_RAYS}</g>'
+
+
+def _drops(xs: list[float], length: float = 7, top: float = 33) -> str:
+    return '<g style="stroke:var(--rain);stroke-width:3.2;stroke-linecap:round">' + "".join(
+        f'<line x1="{x}" y1="{top}" x2="{x - length * 0.35:.1f}" y2="{top + length}"/>' for x in xs
+    ) + "</g>"
+
+
+_CLOUD_STYLE = {"cl": "fill:var(--cloud)", "cl2": "fill:var(--cloud);opacity:.55", "dk": "fill:var(--cloud-dark)"}
+
+
+def _cloud(kind: str, scale: float = 1.0, dx: float = 0, dy: float = 0) -> str:
+    return f'<path style="{_CLOUD_STYLE[kind]}" d="{_CLOUD}" transform="translate({dx} {dy}) scale({scale})"/>'
+
+
+_SMALL_SUN = f'<g transform="translate(-1.5 -2.5) scale(0.7)">{_SUN}</g>'
+ICON_SHAPES = {
+    "sun": _SUN,
+    "sun-cloud": _SMALL_SUN + _cloud("cl", 0.8, 9, 10),
+    "cloud": _cloud("cl2", 0.7, 16, -2) + _cloud("cl", 0.9, 0, 6),
+    "overcast": _cloud("cl", 0.7, 16, -2) + _cloud("dk", 0.9, 0, 6),
+    "sun-shower": _SMALL_SUN + _cloud("cl", 0.8, 9, 4) + _drops([24, 33], 6, 35),
+    "cloud-shower": _cloud("cl", 0.95, 1, -5) + _drops([19, 30], 6),
+    "rain-maybe": _cloud("dk", 0.95, 1, -5) + _drops([19, 30], 7),
+    "rain": _cloud("dk", 0.95, 1, -5) + _drops([15, 24, 33], 8),
+    "heavy-rain": _cloud("dk", 0.95, 1, -5) + _drops([12, 19, 26, 33, 40], 10),
+}
+# 天氣用語(analysis.describe_sky 的輸出)→ 圖示
+ICON_FOR = {
+    "晴": "sun",
+    "晴時多雲": "sun-cloud",
+    "多雲": "cloud",
+    "陰": "overcast",
+    "晴偶陣雨": "sun-shower",
+    "多雲偶雨": "cloud-shower",
+    "可能有雨": "rain-maybe",
+    "有雨": "rain",
+    "明顯降雨": "heavy-rain",
+    "大雨": "heavy-rain",
+}
+ICON_SPRITE = (
+    '<svg class="sprite" aria-hidden="true" width="0" height="0"><defs>'
+    + "".join(f'<symbol id="i-{name}" viewBox="0 0 48 48">{shape}</symbol>' for name, shape in ICON_SHAPES.items())
+    + "</defs></svg>"
+)
+
+
+def _icon(sky: str) -> str:
+    """天氣用語對應的圖示;沒有對應的用語就不畫。"""
+    name = ICON_FOR.get(sky)
+    return f'<svg class="ico" aria-hidden="true" viewBox="0 0 48 48"><use href="#i-{name}"/></svg>' if name else ""
+
+
 def _table(rows: list[list[str]], cls: str = "", caption: str = "", head_col: bool = True) -> str:
     """文字表格;第一列是標題,第一欄是列標題。"""
     head = "".join(f"<th>{esc(c)}</th>" for c in rows[0])
@@ -391,7 +467,7 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
         parts.append(
             f'<div class="d d{i}" style="--o:{i * 10}" data-day="{f.day}" data-tip="{esc(tip)}">'
             f'<b data-rel>{d.month}/{d.day}<span>{"一二三四五六日"[d.weekday()]}</span></b>'
-            f'<span class="wx">{esc(f.sky)}</span>'
+            f'<span class="wx">{_icon(f.sky)}{esc(f.sky)}</span>'
             f'<div class="tcol"><s style="flex:{high - f.tmax.p50:.2f}"></s><span>{f.tmax.p50:.0f}°</span>'
             f'<i style="flex:{max(f.tmax.p50 - f.tmin.p50, 0.1):.2f}"></i><span>{f.tmin.p50:.0f}°</span><s style="flex:{f.tmin.p50 - low:.2f}"></s></div>'
             f'<div class="rcol"><i style="height:{f.pop * 100:.0f}%"></i></div><span class="pop">降雨 {f.pop:.0%}</span>'
@@ -486,7 +562,7 @@ def _period_grid(rows) -> str:
                 f"降雨機率 {c.pop:.0%}\n雨量中位數 {c.precip.p50:.1f} mm,偏多時 {c.precip.p90:.1f} mm"
             )
             tds.append(
-                f'<td class="cell" data-tip="{esc(tip)}"><b>{c.temp.p50:.0f}°</b><span>{esc(c.sky)} {c.pop:.0%}</span>'
+                f'<td class="cell" data-tip="{esc(tip)}">{_icon(c.sky)}<b>{c.temp.p50:.0f}°</b><span>{esc(c.sky)} {c.pop:.0%}</span>'
                 f'<i style="width:{c.pop * 100:.0f}%"></i></td>'
             )
         body.append("<tr>" + "".join(tds) + "</tr>")
@@ -640,8 +716,9 @@ def _risk_view(forecast, brief) -> str:
 
 def _plain_view(forecast, upper_days, period_list, southern: bool) -> str:
     """給不熟悉氣象的讀者:每天的天氣、原因與準備,不使用術語。"""
+    sky = {f.day: f.sky for f in forecast}
     cards = "".join(
-        f'<div class="pd" data-day="{d.day}"><h3 data-rel>{esc(plain._label(d.day))}</h3><p>{esc(d.weather)}</p>'
+        f'<div class="pd" data-day="{d.day}"><h3 data-rel>{_icon(sky.get(d.day, ""))}{esc(plain._label(d.day))}</h3><p>{esc(d.weather)}</p>'
         + (f"<p><b>為什麼:</b>{esc(d.why)}</p>" if d.why else "")
         + (f'<p><b>怎麼準備:</b>{esc("、".join(d.advice))}。</p>' if d.advice else "")
         + (f'<p class="sub">{esc(d.caution)}</p>' if d.caution else "")
@@ -908,6 +985,24 @@ ABOUT_HTML = (
             ["雷達回波", "RainViewer、日本氣象廳、中央氣象署", "只在瀏覽器裡即時顯示,不進入預報計算"],
         ]
     )
+    + "<h2>天氣圖示</h2>"
+    '<p class="sub">圖示依當天的降雨機率與雲量決定,旁邊一定有文字。雨滴越多,雨越明顯。</p>'
+    '<div class="icons">'
+    + "".join(
+        f"<div>{_icon(sky)}<b>{sky}</b><span>{note}</span></div>"
+        for sky, note in (
+            ("晴", "雲很少,不會下雨"),
+            ("晴時多雲", "有些雲,不會下雨"),
+            ("多雲", "雲多,不會下雨"),
+            ("陰", "整天都是雲,不會下雨"),
+            ("晴偶陣雨", "降雨機率 20–40%,雲不多"),
+            ("多雲偶雨", "降雨機率 20–40%,雲多"),
+            ("可能有雨", "降雨機率 40–70%"),
+            ("有雨", "降雨機率 70% 以上"),
+            ("明顯降雨", "會下雨,而且雨量 10 毫米以上;大雨也用這個圖示"),
+        )
+    )
+    + "</div>"
     + "<h2>名詞解釋</h2>"
     + _table([["名詞", "簡單解釋", "在本站哪裡看到"], *([a, b, c] for a, b, c in GLOSSARY)])
     + '<section id="notes"><h2>注意事項</h2><ul>'
@@ -997,7 +1092,7 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
         for n in names:
             d = by_place[n].get(day)
             cells += (
-                f'<td><span class="wx">{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small></td>'
+                f'<td><span class="wx">{_icon(d["sky"])}{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small></td>'
                 if d else "<td>–</td>"
             )
         body += (
@@ -1067,7 +1162,7 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str], pa
         '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         f'<link rel="stylesheet" href="{FONTS}">'
         + (f'<link rel="stylesheet" href="{leaflet}.css">' if radar else "")
-        + f"<style>{CSS}</style><script>document.documentElement.classList.add('js')</script></head><body>"
+        + f"<style>{CSS}</style><script>document.documentElement.classList.add('js')</script></head><body>{ICON_SPRITE}"
         f'<header class="top"><div class="in"><a class="brand" href="#/overview">一週天氣預報</a><nav class="nav" aria-label="主要頁面">{nav}</nav>'
         f'<p class="sub" id="fresh" data-generated="{iso}">更新於 {stamp}</p></div></header><main>'
         f'<section class="page on" data-page="overview">{_overview(names, payloads)}{missing}</section>'
