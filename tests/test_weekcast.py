@@ -1239,6 +1239,12 @@ class ReadabilityTest(unittest.TestCase):
         self.assertIn("markDays()", self.page)
         self.assertIn("'今天'", self.page)
 
+    def test_stale_page_offers_to_recompute_in_the_browser(self):
+        self.assertIn("b.id='renew'", self.page)
+        self.assertIn("async function renew()", self.page)
+        self.assertIn("s.innerHTML=keep", self.page)  # 重算失敗要把原本的內容放回去
+        self.assertIn("立即重算", self.page)
+
     def test_page_reports_how_old_the_data_is(self):
         self.assertIn("沒有更新,內容可能過時", self.page)
         self.assertIn("小時前", self.page)
@@ -1293,7 +1299,7 @@ class ScheduleGuardTest(unittest.TestCase):
     def test_workflow_checks_hourly_and_skips_deploy_when_nothing_was_built(self):
         text = (Path(__file__).parent.parent / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
         self.assertIn('cron: "23 * * * *"', text)
-        self.assertIn("--only-if-older-than 5", text)
+        self.assertIn("--only-if-older-than 3", text)
         self.assertIn("if: needs.build.outputs.built == 'true'", text)
 
 

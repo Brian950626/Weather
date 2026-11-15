@@ -5,7 +5,8 @@ on:
     branches: [main]
   schedule:
     # 目標是大約每 6 小時更新一次。GitHub 的排程常常延後,有時整班跳過,所以改成每小時
-    # 檢查一次:上一次發布還不到 5 小時就直接結束,超過才重算。這樣漏掉一班,下一個小時就補上。
+    # 檢查一次:上一次發布還不到 3 小時就直接結束,超過才重算。實際上 GitHub 每 4 到 7 小時才
+    # 觸發一次,門檻訂 5 小時的話,4 小時那次會被略過,下一次可能又等 7 小時,資料就放了 11 小時。這樣漏掉一班,下一個小時就補上。
     - cron: "23 * * * *"
   workflow_dispatch:
 
@@ -43,7 +44,7 @@ jobs:
         id: site
         run: |
           fresh=""
-          if [ "${{ github.event_name }}" = "schedule" ]; then fresh="--only-if-older-than 5"; fi
+          if [ "${{ github.event_name }}" = "schedule" ]; then fresh="--only-if-older-than 3"; fi
           python -m weekcast.site --out _site --previous previous.json $fresh $PLACES
           if [ -f _site/index.html ]; then echo "built=true" >> "$GITHUB_OUTPUT"; else echo "built=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/upload-pages-artifact@v3
