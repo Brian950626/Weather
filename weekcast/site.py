@@ -108,6 +108,8 @@ caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;pad
 .rel{display:inline-block;font:600 12px/1.5 var(--sans);font-style:normal;color:var(--sheet);background:var(--ink);border-radius:3px;padding:0 5px;margin-left:6px;vertical-align:middle}
 .past{opacity:.5}.past .rel{background:var(--muted)}
 #fresh.stale{color:var(--warm);font-weight:600}
+#renew{font:inherit;font-weight:600;margin-left:8px;padding:2px 10px;border:1px solid var(--warm);border-radius:4px;background:var(--sheet);color:var(--warm);cursor:pointer}
+.renewed{color:var(--rain)}
 details.nums dl{margin:6px 0;display:grid;grid-template-columns:max-content 1fr;gap:4px 14px}
 details.nums dt{font-weight:600;color:var(--ink);white-space:nowrap}details.nums dd{margin:0}
 .legend .lg{display:inline-block;width:92px;height:10px;border-radius:2px;margin-right:8px;vertical-align:middle;background:linear-gradient(90deg,#a9e3ff,#1877d2 45%,#f2d53c 72%,#e03a2c)}
@@ -245,8 +247,19 @@ const local=t=>new Date(t).toLocaleString('zh-TW',{month:'numeric',day:'numeric'
 function stampText(extra){const h=(Date.now()-new Date(built))/36e5,old=h>=9;
  const ago=h<1?'不到 1 小時前':'約 '+Math.round(h)+' 小時前';
  fresh.classList.toggle('stale',old);
- fresh.textContent=(old?'資料已 '+Math.round(h)+' 小時沒有更新,內容可能過時。':'')+'更新於 '+local(built)+'('+ago+')'+(extra||'')}
+ fresh.textContent=(old?'資料已 '+Math.round(h)+' 小時沒有更新,內容可能過時。':'')+'更新於 '+local(built)+'('+ago+')'+(extra||'');
+ if(old){const b=document.createElement('button');b.type='button';b.id='renew';b.textContent='立即重算';b.addEventListener('click',renew);fresh.appendChild(b)}}
 stampText();
+// 排程沒跑、資料太舊時,讀者可以自己用最新資料重算目前的地點(和搜尋欄用同一套做法,在瀏覽器裡算)
+async function renew(){const s=secs()[cur];if(!s||s.dataset.pending)return;
+ const keep=s.innerHTML;go('place',cur,tab);
+ s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1><p class="wait"></p>';s.dataset.pending='1';
+ await compute(s);
+ if(s.dataset.pending){const why=(s.querySelector('.wait')||{}).textContent||'';delete s.dataset.pending;s.innerHTML=keep;paint();markDays();
+  stampText(';重算沒有成功:'+why)}
+ else{const note=document.createElement('p');note.className='sub renewed';
+  note.textContent='這個地點剛在你的瀏覽器裡用最新資料重算('+local(Date.now())+')。其他地點仍是上面寫的更新時間;預報趨勢與校驗要等網站下次自動更新。';
+  s.querySelector('h1').after(note)}}
 // 依讀者裝置的日期標出今天、明天,已經過去的日子變淡
 function markDays(){const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
  const now=new Date(),today=iso(now),next=iso(new Date(now.getFullYear(),now.getMonth(),now.getDate()+1));
@@ -1013,7 +1026,7 @@ ABOUT_HTML = (
     "<li><b>解析度約 25 公里。</b>相鄰鄉鎮的結果會很接近;落山風、山區午後雷陣雨、海陸風這類局部現象,模式解析不出來。</li>"
     "<li><b>氣溫沒有用測站觀測校正。</b>山區與海邊的誤差會比平地大。</li>"
     "<li><b>預設地點大約每 6 小時更新一次。</b>更新由 GitHub 的排程觸發,排程有時會延後甚至跳過,所以網站每小時檢查一次,"
-    "資料超過 5 小時就重算。頁面右上角會寫資料是幾小時前的;超過 9 小時沒更新會出現提醒。開著的頁面每 10 分鐘檢查一次,有新預報會自動重新載入。</li>"
+    "資料超過 3 小時就重算(實際上 GitHub 每 4 到 7 小時才觸發一次)。資料太舊時,右上角會出現「立即重算」,按下去會在你的瀏覽器裡用最新資料重算目前的地點,不必等排程。頁面右上角會寫資料是幾小時前的;超過 9 小時沒更新會出現提醒。開著的頁面每 10 分鐘檢查一次,有新預報會自動重新載入。</li>"
     "<li><b>「今天、明天」是依你裝置的日期標的。</b>已經過去的日子會變淡。</li>"
     "<li><b>用搜尋欄查的地點不會自動更新</b>,每次點開才重新計算,第一次約需 10–20 秒,也沒有預報趨勢與校驗。</li>"
     "</ul></section>"
