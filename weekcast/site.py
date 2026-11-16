@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import analysis, briefing, client, history, periods, plain, report, upper, verify
+from .cities import CITIES
 from .towns import TOWNS
 
 DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
@@ -301,7 +302,7 @@ async function compute(s){delete s.dataset.pending;const w=s.querySelector('.wai
   s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint();markDays()}
  catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+explain(e)+'請再點一次這個地點重試。'}}
 // 把程式或瀏覽器的英文錯誤訊息換成看得懂的中文
-function explain(e){const t=String(e&&e.message||e);
+function explain(e){const t=String(e&&e.message||e);try{console.warn('weekcast:',t)}catch(x){}
  if(/minutely|hourly/i.test(t)&&/limit/i.test(t))return '氣象資料來源暫時忙線(短時間內查詢太多次),等一分鐘。';
  if(/daily/i.test(t)&&/limit/i.test(t))return '今天向氣象資料來源查詢的次數已達上限,明天才能再查。';
  if(/failed to fetch|networkerror|load failed|network/i.test(t))return '連不上網路或資料來源,請確認網路連線。';
@@ -312,12 +313,17 @@ function open(name,lat,lon){hits.innerHTML='';msg.textContent='';box.value='';
  const list=saved();if(!list.some(p=>p.name===name&&p.lat==lat)){list.push({name,lat,lon});keep(list)}
  go('place',addTab(name,lat,lon),TABS[0])}
 // 先查內建的臺灣鄉鎮市區清單(不連網、一定是中文);查不到才問外部的地名服務
-const TOWNS=__TOWNS__,norm=t=>t.trim().replace(/臺/g,'台').replace(/\\s+/g,'');
+const TOWNS=__TOWNS__,CITIES=__CITIES__,norm=t=>t.trim().replace(/臺/g,'台').replace(/\\s+/g,'');
 function localHits(text){const q=norm(text);if(!q)return [];const out=[];
  for(const [county,town,lat,lon] of TOWNS){const base=town.slice(0,-1),c=county.slice(0,-1);
   const forms=[town,base,county+town,county+base,c+town,c+base];
   const rank=forms.includes(q)?0:(town.startsWith(q)||(county+town).startsWith(q))?1:(county+town).includes(q)?2:-1;
   if(rank>=0)out.push({rank,name:county+town,where:'',lat,lon})}
+ // 世界主要城市:中文名或英文名都可以
+ const low=text.trim().toLowerCase();
+ for(const [zh,en,country,lat,lon] of CITIES){const name=zh.replace(/臺/g,'台'),e=en.toLowerCase(),bare=name.split('(')[0];
+  const rank=(q===name||q===bare||low===e)?0:(name.startsWith(q)||e.startsWith(low))?1:(q.length>=2&&(name.includes(q)||e.includes(low)||q===country))?2:-1;
+  if(rank>=0)out.push({rank,name:bare,where:country,lat,lon})}
  return out.sort((a,b)=>a.rank-b.rank).slice(0,8)}
 function offer(list,note){hits.innerHTML='';msg.textContent=note;
  list.forEach(o=>{const b=document.createElement('button');b.type='button';
@@ -333,6 +339,10 @@ form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.tr
  if(found.length===1){open(found[0].name,found[0].lat,found[0].lon);return}
  if(found.length){offer(found,'請選擇:');return}
  msg.textContent='搜尋中';
+ // 清單裡沒有的地名:先問氣象資料來源自己的地名服務(較穩定,有中文名就用中文),問不到再問 Photon
+ try{const g=await(await fetch('https://geocoding-api.open-meteo.com/v1/search?count=8&language=zh&name='+encodeURIComponent(q))).json();
+  const found=(g.results||[]).map(r=>({name:r.name,where:[r.admin1,r.country].filter((v,i,a)=>v&&v!==r.name&&a.indexOf(v)===i).join('、'),lat:r.latitude,lon:r.longitude}));
+  if(found.length){offer(found.slice(0,6),'請選擇:');return}}catch(err){}
  try{const url='https://photon.komoot.io/api/?limit=8&lat=23.7&lon=121&q='+encodeURIComponent(q);
   // lang=default 讓地名用當地的文字,不跟著瀏覽器的語言變成英文;服務不接受這個參數時退回原本的查法
   let r=await fetch(url+'&lang=default');if(!r.ok)r=await fetch(url);
@@ -343,7 +353,7 @@ form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.tr
    const key=lat.toFixed(1)+','+lon.toFixed(1);if(seen.has(key))continue;seen.add(key);out.push({name:p.name||q,where,lat,lon})}
   if(!out.length){msg.textContent='找不到「'+q+'」。臺灣的地點請輸入鄉鎮市區的名稱(例如 東港、恆春鎮、屏東縣枋山鄉),或輸入座標,例如 22.37,120.59';return}
   offer(out.slice(0,6),'請選擇:')}
- catch(err){msg.textContent='找不到「'+q+'」。臺灣的地點請輸入鄉鎮市區的名稱(例如 東港、恆春鎮);國外地名的查詢服務目前連不上,可以改輸入座標,例如 35.68,139.69'}});
+ catch(err){msg.textContent='找不到「'+q+'」。臺灣請輸入鄉鎮市區(例如 東港、恆春鎮);國外請輸入城市的中文或英文名(例如 東京、Paris),或直接輸入座標,例如 35.68,139.69'}});
 saved().forEach(p=>addTab(p.name,p.lat,p.lon));
 route();
 """
@@ -933,7 +943,7 @@ def build_place(
 # --------------------------------------------------------------------------- #
 
 SEARCH_HTML = """<form id="find" role="search"><input id="q" type="search" autocomplete="off"
-placeholder="查其他地點:東港、恆春鎮、Tokyo 或 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
+placeholder="查其他地點:東港、恆春鎮、東京、New York 或座標 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
 <span id="fmsg"></span><div id="hits"></div></form>"""
 
 RADAR_HTML = """<section class="page" data-page="radar" id="radar"><h1>即時雷達回波</h1>
@@ -1168,7 +1178,7 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str], pa
     missing = f'<p class="sub">這次沒能更新:{esc("、".join(failed))}。</p>' if failed else ""
     script = JS.replace("__TABS__", json.dumps([key for key, _ in TABS])).replace(
         "__TOWNS__", json.dumps([list(t) for t in TOWNS], ensure_ascii=False, separators=(",", ":"))
-    )
+    ).replace("__CITIES__", json.dumps([list(c) for c in CITIES], ensure_ascii=False, separators=(",", ":")))
     return (
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'

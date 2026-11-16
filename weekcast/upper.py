@@ -541,7 +541,9 @@ def trough_passage(rows: list[UpperDay]) -> tuple[str, str] | None:
         if cur.regime == "槽線過境":
             return cur.day, cur.day
         approaching = prev.regime in ("槽前", "槽線過境") and prev.trough is not None and -LIFT_RANGE <= prev.trough <= NEAR_AXIS
+        if not approaching:
+            continue  # 前一天上空沒有接近中的槽線(prev.trough 可能是 None),談不上通過
         gone = cur.regime != "槽前" and (cur.trough is None or cur.trough > 0 or cur.trough < prev.trough - 10)
-        if approaching and gone:
+        if gone:
             return prev.day, cur.day
     return None

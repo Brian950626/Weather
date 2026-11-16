@@ -45,6 +45,7 @@ SYSTEMS = {
     "高空槽接近": "高空有低壓帶靠近,天氣轉不穩定",
     "低壓或鋒面接近": "有低壓或冷暖空氣的交界靠近,天氣轉壞",
     "低壓或熱帶系統接近": "有低壓或颱風類的系統靠近",
+    "低壓接近": "有低壓靠近,天氣轉壞",
     "鋒面通過": "冷暖空氣的交界通過,有雨、之後轉涼",
     "東北季風影響": "東北風帶來涼空氣,迎風面多雲有雨",
     "東北季風增強": "東北風增強,變涼、迎風面有雨",
@@ -168,7 +169,9 @@ def _weather(fc: DayForecast, previous: DayForecast | None, cells) -> str:
             change = f",比前一天涼 {abs(delta):.0f} 度"
         elif delta >= 3:
             change = f",比前一天暖 {delta:.0f} 度"
-    return f"{rain}{',' + when if when else ''};{temps}{change}。"
+    # 模式給的是降水量,不分雨或雪;這裡的用語和圖示都寫「雨」,天氣夠冷時要提醒一聲
+    snow = ";氣溫在冰點附近,降下來的可能是雪" if fc.pop >= SHOWERY and fc.tmax.p50 <= 2 else ""
+    return f"{rain}{',' + when if when else ''}{snow};{temps}{change}。"
 
 
 def _factors(up: UpperDay) -> tuple[list[str], list[str]]:
