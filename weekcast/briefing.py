@@ -17,10 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from .analysis import DayForecast, DayPattern, Signal, confidence_label, confidence_reasons
+from .analysis import change_thresholds, DayForecast, DayPattern, Signal, confidence_label, confidence_reasons
 from .upper import LIFT_RANGE, PWAT_RICH, SUBTROPICAL_HIGH, UpperDay, _turn, compass, trough_passage
 
-STABLE = {"ridge", "warm", "quiet"}  # 其餘(trough / front / cold / wet / low)算作「有天氣系統影響」
+STABLE = {"ridge", "warm", "quiet"}  # 其餘(trough / front / cold / wet / low)是會帶來降雨的天氣系統
 MAX_STAGES = 3
 
 
@@ -59,39 +59,71 @@ def _monsoon(latitude: float, longitude: float, direction: float | None) -> bool
     return 10 <= latitude <= 40 and 100 <= longitude <= 135 and direction is not None and (direction >= 330 or direction <= 110)
 
 
+def _in_monsoon_region(latitude: float, longitude: float) -> bool:
+    return 10 <= latitude <= 40 and 100 <= longitude <= 135
+
+
+def _from_south(direction: float | None, latitude: float) -> bool:
+    """低層風是不是從赤道那一側吹來(北半球是東南到西南風)。"""
+    if direction is None:
+        return False
+    return _turn(direction, 180.0 if latitude >= 0 else 0.0) <= 70
+
+
 def day_roles(
     forecast: list[DayForecast],
     signals: list[Signal],
     upper_days: list[UpperDay] | None,
     latitude: float,
     longitude: float = 0.0,
+    patterns: list[DayPattern] | None = None,
 ) -> list[DayRole]:
     """判斷每一天由什麼天氣系統主導。
 
-    順序就是優先順序:熱帶系統或深低壓 → 低層鋒面 → 鋒後冷空氣 → 高空槽 → 高壓 → 回暖。
-    沒有高空資料時,只靠氣壓、850 hPa 溫度與 500 hPa 高度的逐日變化判斷。
+    順序就是優先順序:熱帶系統或深低壓 → 低層鋒面 → 冷空氣到達 → 冷空氣持續 → 冷空氣減弱回暖
+    → 高空槽 → 高壓 → 回暖。沒有高空資料時,只靠氣壓、850 hPa 溫度與 500 hPa 高度的逐日變化判斷。
+
+    冷空氣到達不一定看得到風向轉變:迎風面早就吹東北風,背風面的風又弱又亂。所以只要
+    「降溫」(850 hPa 一天降 2°C 以上,或高溫降 3°C 以上)加上「冷空氣的跡象」(氣壓上升,
+    或低層吹偏北風)同時出現,就算冷空氣到達。
     """
     kinds: dict[str, set[str]] = {}
     for s in signals:
         kinds.setdefault(s.day, set()).add(s.kind)
     rows = {r.day: r for r in upper_days or []}
+    table = {p.day: p for p in patterns or []}
     pole = 0.0 if latitude >= 0 else 180.0
+    monsoon_area = _in_monsoon_region(latitude, longitude)
+    _, d_t850, _ = change_thresholds(latitude)
     out: list[DayRole] = []
     previous: DayForecast | None = None
+    event = ""  # 正在進行的冷空氣事件:"monsoon"、"cold" 或空字串
     for fc in forecast:
         seen, row = kinds.get(fc.day, set()), rows.get(fc.day)
-        after_front = bool(out) and out[-1].kind in ("front", "cold")
-        cold_side = row is not None and row.dir925 is not None and _turn(row.dir925, pole) <= 100
-        monsoon = _monsoon(latitude, longitude, row.dir925 if row else None)
-        warming = previous is not None and fc.tmax.p50 - previous.tmax.p50 >= 2
+        here, before = table.get(fc.day), table.get(previous.day) if previous else None
+        d_tmax = fc.tmax.p50 - previous.tmax.p50 if previous else 0.0
+        d_mslp = here.mslp - before.mslp if here and before and None not in (here.mslp, before.mslp) else 0.0
+        d_t = here.t850 - before.t850 if here and before and None not in (here.t850, before.t850) else None
+        dir925 = row.dir925 if row else None
+        poleward = dir925 is not None and _turn(dir925, pole) <= 70
+        warming = previous is not None and (d_tmax >= 2 or "warm" in seen)
+        cooling = "cold" in seen or (d_t is not None and d_t <= -d_t850) or d_tmax <= -3
+        onset = cooling and not warming and ("pressure_rise" in seen or d_mslp >= 1.5 or poleward)
+        # 東北季風:東亞的冷空氣事件。背風面的風弱又亂,只要不是明顯的南風就算
+        monsoon = monsoon_area and latitude >= 0 and not (_from_south(dir925, latitude) and row is not None and (row.wind925 or 0) >= 3)
+        cold_name = "冷空氣南下" if latitude >= 0 else "冷空氣北上"
         if "deep_low" in seen:
             role = ("low", "低壓或熱帶系統接近" if abs(latitude) < 35 else "低壓接近")  # 高緯度沒有熱帶系統
         elif row is not None and row.shift is not None:
             strong = row.shift.cooling is not None and row.shift.cooling >= 3
-            surge = "東北季風增強" if _monsoon(latitude, longitude, row.shift.to_dir) else "冷空氣南下" if latitude >= 0 else "冷空氣北上"
+            surge = "東北季風增強" if _monsoon(latitude, longitude, row.shift.to_dir) else cold_name
             role = ("front", f"鋒面通過、{surge}" if strong else "鋒面通過")
-        elif (after_front and cold_side and not warming) or {"cold", "pressure_rise"} <= seen:
-            role = ("cold", "東北季風影響" if monsoon or row is None and 10 <= latitude <= 40 and 100 <= longitude <= 135 else "鋒後冷空氣影響")
+        elif onset and not event:
+            role = ("cold", "東北季風增強" if monsoon else cold_name)
+        elif event and not warming and (d_t is None or d_t < 1.5):  # 冷空氣還在
+            role = ("cold", "東北季風影響" if event == "monsoon" else "鋒後冷空氣影響")
+        elif event:  # 高溫或 850 hPa 回升:冷空氣減弱
+            role = ("warm", "東北季風減弱、回暖" if event == "monsoon" else "冷空氣減弱、回暖")
         elif row is not None and fc.pop >= 0.4 and (row.regime == "槽線過境" or (row.regime == "槽前" and row.trough is not None and -LIFT_RANGE <= row.trough < 0)):
             role = ("trough", "高空槽接近")
         elif row is None and "trough" in seen and fc.pop >= 0.4:
@@ -105,13 +137,28 @@ def day_roles(
         elif row is not None and row.regime == "脊線上":
             role = ("ridge", "高壓脊籠罩")
         elif "warm" in seen or warming and (row is None or row.tadv850 is None or row.tadv850 >= 1.0):
-            role = ("warm", "偏南風回暖" if latitude >= 0 else "偏北風回暖")
+            south = "偏南風回暖" if latitude >= 0 else "偏北風回暖"
+            role = ("warm", south if _from_south(dir925, latitude) else "回暖")
         elif "ridge" in seen:
             role = ("ridge", "高壓脊建立")
         else:
             role = ("quiet", "天氣穩定" if fc.pop < 0.3 else "沒有明顯天氣系統,局部短暫雨")
+        if role[0] in ("front", "cold"):
+            if not event:
+                turned = row.shift.to_dir if role[0] == "front" and row is not None and row.shift is not None else None
+                event = "monsoon" if "東北季風" in role[1] or (turned is not None and _monsoon(latitude, longitude, turned)) else "cold"
+        else:
+            event = ""
         out.append(DayRole(fc.day, *role))
         previous = fc
+    # 冷空氣到達的前一天如果在下雨、氣壓也開始上升,那是鋒面接近
+    for i in range(len(out) - 1):
+        nxt = out[i + 1]
+        starts = nxt.kind == "cold" and nxt.system in ("東北季風增強", "冷空氣南下", "冷空氣北上")
+        here, before = table.get(out[i].day), table.get(out[i - 1].day) if i else None
+        rising = here and before and None not in (here.mslp, before.mslp) and here.mslp - before.mslp >= 2
+        if starts and out[i].kind in ("wet", "trough", "quiet") and forecast[i].pop >= 0.5 and rising:
+            out[i] = DayRole(out[i].day, "front", "鋒面接近")
     return out
 
 
@@ -133,7 +180,8 @@ class Stage:
     pop: tuple[float, float]
     confidence: int
     confidence_label: str
-    stable: bool = True  # 這個時段沒有天氣系統影響
+    stable: bool = True  # 這個時段沒有會下雨的日子
+    tone: str = "fair"  # 時段的性質:cold(冷空氣)、rain(降雨系統)、fair(穩定)
     reasons: list[str] = field(default_factory=list)  # 信心度的理由
     rationale: list[tuple[str, str]] = field(default_factory=list)  # (層次, 說明):預報理由
     coupling: str = ""  # 垂直結構檢查
@@ -246,46 +294,175 @@ def _rationale(rows: list[UpperDay], southern: bool, wettest: float = 1.0) -> tu
     return out, coupling
 
 
-def _group(kinds: list[str]) -> list[list[int]]:
-    """把連續的日子依「穩定/有天氣系統影響」切段,最多 MAX_STAGES 段。"""
-    groups: list[list[int]] = []
-    for i, kind in enumerate(kinds):
-        if groups and (kinds[groups[-1][-1]] in STABLE) == (kind in STABLE):
-            groups[-1].append(i)
-        else:
-            groups.append([i])
-    while len(groups) > MAX_STAGES:
-        sizes = [len(a) + len(b) for a, b in zip(groups, groups[1:])]
-        at = max(i for i, size in enumerate(sizes) if size == min(sizes))  # 一樣短時併後面的
-        groups[at : at + 2] = [groups[at] + groups[at + 1]]
-    return groups
+def affected(kind: str, pop: float) -> bool:
+    """這一天有沒有天氣系統帶來降雨。
 
-
-def outline(role_sets: list[list[dict]]) -> list[dict]:
-    """多個地點合起來看:每天取最多地點認定的影響系統,再分成時段。
-
-    role_sets 的每一項是一個地點的逐日角色({"day", "kind", "system"})。
-    回傳 [{"days": [...], "headline": ..., "systems": {日期: 系統}}]。
+    只看系統的種類不夠:東北季風影響下的南部是背風面,常常整天不下雨;反過來,沒有
+    明顯系統但降雨機率過半的日子(例如迎風面的地形雨)也該算進來。
     """
-    by_day: dict[str, list[tuple[str, str]]] = {}
-    for roles in role_sets:
-        for role in roles:
-            by_day.setdefault(role["day"], []).append((role["kind"], role["system"]))
-    days = sorted(by_day)
-    if not days:
+    return pop >= 0.5 or (kind not in STABLE and pop >= 0.4)
+
+
+CLASS = {"front": "cold", "cold": "cold", "trough": "rain", "wet": "rain", "low": "rain", "ridge": "fair", "warm": "fair", "quiet": "fair"}
+# 切段用的特徵與尺度:差一個尺度,大約就是「天氣明顯不一樣」
+SCALES = (("tmax", 3.0), ("tmin", 3.0), ("pop", 0.3), ("t850", 3.0), ("mslp", 4.0), ("z500", 40.0))
+CLASS_WEIGHT = 1.0  # 天氣系統的種類(冷空氣、降雨系統、穩定)換了,也算一個尺度的差別
+SPLIT_COST = 3.0  # 多切一段,要讓段內的差異至少減少這麼多才值得
+
+
+def _cost(rows: list[list[float]]) -> float:
+    """一段日子的離散程度:各特徵和段內平均的差的平方和。"""
+    n = len(rows)
+    means = [sum(column) / n for column in zip(*rows)]
+    return sum((value - mean) ** 2 for row in rows for value, mean in zip(row, means))
+
+
+def split_week(features: list[list[float]], max_stages: int = MAX_STAGES) -> list[list[int]]:
+    """把連續的日子分成最多 max_stages 段,讓同一段裡的天氣盡量相近。
+
+    這是把一串數值切成幾段、使段內差異最小的標準做法(動態規劃)。段數越多差異越小,
+    所以每多一段要付 SPLIT_COST 的代價,差異減少得不夠多就不切。
+    """
+    n = len(features)
+    if n == 0:
         return []
-    common = [max(dict.fromkeys(by_day[d]), key=by_day[d].count) for d in days]
-    out = []
-    for members in _group([kind for kind, _ in common]):
-        out.append(
-            {
-                "days": [days[i] for i in members],
-                "headline": " → ".join(dict.fromkeys(common[i][1] for i in members)),
-                "stable": all(common[i][0] in STABLE for i in members),
-                "systems": {days[i]: common[i][1] for i in members},
-            }
-        )
-    return out
+    cost = [[_cost(features[i:j]) if j > i else 0.0 for j in range(n + 1)] for i in range(n + 1)]
+    best: dict[tuple[int, int], tuple[float, list[int]]] = {}  # (段數, 前 j 天) → (代價, 切點)
+    for j in range(1, n + 1):
+        best[(1, j)] = (cost[0][j], [])
+    for k in range(2, max_stages + 1):
+        for j in range(k, n + 1):
+            best[(k, j)] = min(((best[(k - 1, i)][0] + cost[i][j], best[(k - 1, i)][1] + [i]) for i in range(k - 1, j)), key=lambda x: x[0])
+    k = min((k for k in range(1, min(max_stages, n) + 1)), key=lambda k: best[(k, n)][0] + SPLIT_COST * (k - 1))
+    cuts = [0, *best[(k, n)][1], n]
+    return [list(range(a, b)) for a, b in zip(cuts, cuts[1:])]
+
+
+def _features(forecast: list[DayForecast], roles: list[DayRole], patterns: list[DayPattern] | None) -> list[list[float]]:
+    table = {p.day: p for p in patterns or []}
+    raw = []
+    for fc, role in zip(forecast, roles):
+        p = table.get(fc.day)
+        values = {"tmax": fc.tmax.p50, "tmin": fc.tmin.p50, "pop": fc.pop,
+                  "t850": p.t850 if p else None, "mslp": p.mslp if p else None, "z500": p.z500 if p else None}
+        raw.append([values[name] for name, _ in SCALES] + [CLASS_WEIGHT * (CLASS[role.kind] == c) for c in ("cold", "rain", "fair")])
+    columns = list(zip(*raw))
+    filled = []
+    for i, column in enumerate(columns):  # 缺值用該欄的平均補;整欄都缺就不用這一欄
+        known = [v for v in column if v is not None]
+        if not known:
+            continue
+        mean = sum(known) / len(known)
+        scale = SCALES[i][1] if i < len(SCALES) else 1.0
+        filled.append([(mean if v is None else v) / scale for v in column])
+    return [list(row) for row in zip(*filled)]
+
+
+_QUIET = ("天氣穩定", "沒有明顯天氣系統,局部短暫雨")
+# 同一段裡同時出現時,只留後者(它已經涵蓋前者)
+_COVERED = (
+    ("東北季風影響", ("東北季風增強", "鋒面通過、東北季風增強")),
+    ("鋒後冷空氣影響", ("冷空氣南下", "冷空氣北上", "鋒面通過、冷空氣南下", "鋒面通過、冷空氣北上")),
+    ("高壓脊建立", ("副熱帶高壓籠罩", "高壓脊籠罩")),
+    ("回暖", ("東北季風減弱、回暖", "冷空氣減弱、回暖", "偏南風回暖", "偏北風回暖")),
+)
+
+
+def stage_headline(systems: list[str]) -> str:
+    """一段日子的標題:依時間順序列出主要的天氣系統,拿掉被涵蓋或不重要的。"""
+    names = list(dict.fromkeys(systems))
+    if any(n not in _QUIET for n in names):
+        names = [n for n in names if n not in _QUIET]
+    if any(n not in ("水氣偏多、有雨",) and n not in _QUIET and not n.endswith("回暖") and "高壓" not in n for n in names):
+        names = [n for n in names if n != "水氣偏多、有雨"]
+    for minor, majors in _COVERED:
+        if minor in names and any(m in names for m in majors):
+            names.remove(minor)
+    if len(names) > 3:  # 留頭尾,中間只留最重要的一個
+        rank = lambda n: 3 if "鋒面" in n or "增強" in n or "南下" in n or "北上" in n else 2 if "槽" in n or "低壓" in n else 1
+        names = [names[0], max(names[1:-1], key=rank), names[-1]]
+    return " → ".join(names)
+
+
+def stage_tone(kinds: list[str], pops: list[float]) -> str:
+    """時段的顏色:rain(綠,會下雨)、cold(藍,冷空氣)、fair(黃褐,穩定)。
+
+    一半以上的日子降雨機率過半就是 rain;否則冷空氣的日子佔一半以上就是 cold,
+    例如東北季風下的背風面:變涼但不太下雨。
+    """
+    n = len(kinds)
+    if sum(p >= 0.5 for p in pops) * 2 > n:
+        return "rain"
+    if sum(CLASS[k] == "cold" for k in kinds) * 2 >= n:
+        return "cold"
+    return "rain" if any(affected(k, p) for k, p in zip(kinds, pops)) else "fair"
+
+
+def region(latitude: float, longitude: float) -> str | None:
+    """臺灣的分區(北部、中部、南部、東部、離島);不在臺灣附近就回傳 None。
+
+    分法照預報報告:新竹以北與宜蘭是北部,苗栗到雲林是中部,嘉義以南是南部,花蓮、臺東是東部。
+    """
+    if not (21.5 <= latitude <= 26.5 and 118.0 <= longitude <= 122.3):
+        return None
+    if longitude < 119.9 or latitude > 25.6:
+        return "離島"
+    if longitude >= 121.0 and latitude < 24.5:
+        return "東部"
+    return "北部" if latitude >= 24.65 else "中部" if latitude >= 23.6 else "南部"
+
+
+def _areas(names: list[str], regions: dict[str, str | None]) -> str:
+    """把一組地點寫成分區;同一區的代表地點沒有全部在裡面時,就直接寫地名。"""
+    order = ("北部", "中部", "南部", "東部", "離島")
+    rank = lambda name: order.index(regions[name]) if regions.get(name) in order else len(order)
+    chosen, out = set(names), []
+    for name in sorted(names, key=rank):
+        area = regions.get(name)
+        whole = area is not None and all(n in chosen for n, r in regions.items() if r == area)
+        text = area if whole else name
+        if text not in out:
+            out.append(text)
+    return "、".join(out)
+
+
+def island_summary(places: list[dict]) -> str:
+    """多個地點合起來的結論:哪幾天各地都有雨、哪幾天只有部分地區、哪幾天各地穩定。
+
+    places 的每一項是 {"name", "latitude", "longitude", "roles": [{"day","kind","system"}], "pops": {日期: 降雨機率}}。
+    不取多數決:五個地點有三個在中南部,取多數會把北部的鋒面蓋掉。
+    """
+    if not places:
+        return ""
+    regions = {p["name"]: region(p["latitude"], p["longitude"]) for p in places}
+    days = sorted({role["day"] for p in places for role in p["roles"]})
+    wet: dict[str, list[str]] = {}  # 日期 → 有雨的地點
+    systems: dict[str, list[str]] = {}  # 日期 → 有雨地點的影響系統
+    for p in places:
+        for role in p["roles"]:
+            if affected(role["kind"], p["pops"].get(role["day"], 0.0)):
+                wet.setdefault(role["day"], []).append(p["name"])
+                systems.setdefault(role["day"], []).append(role["system"])
+    everywhere = [d for d in days if len(wet.get(d, [])) == len(places)]
+    nowhere = [d for d in days if not wet.get(d)]
+    partial = [d for d in days if d not in everywhere and d not in nowhere]
+    parts = []
+    if everywhere:
+        chain = " → ".join(dict.fromkeys(max(dict.fromkeys(systems[d]), key=systems[d].count) for d in everywhere))
+        parts.append(f"{_dates(everywhere)} 各地都有雨({chain})")
+    if partial:
+        by_area: dict[str, list[str]] = {}
+        for d in partial:
+            for area in _areas(wet[d], regions).split("、"):
+                by_area.setdefault(area, []).append(d)
+        dry = [n for n in regions if not any(n in wet[d] for d in partial)]
+        text = ",".join(f"{area} {_dates(when)}" for area, when in sorted(by_area.items(), key=lambda item: (item[1][0], -len(item[1]))))
+        parts.append(("其餘幾天" if everywhere else "") + f"只有部分地區有雨:{text}" + (f";{_areas(dry, regions)}大致穩定" if dry else ""))
+    if nowhere:
+        parts.append(f"{_dates(nowhere)} 各地穩定")
+    if not everywhere and not partial:
+        return "這一週各地都沒有明顯的降雨系統,天氣穩定。"
+    return "。".join(parts) + "。"
 
 
 def stages(
@@ -293,13 +470,15 @@ def stages(
     roles: list[DayRole],
     upper_days: list[UpperDay] | None = None,
     southern: bool = False,
+    patterns: list[DayPattern] | None = None,
 ) -> list[Stage]:
     """把預報期間分成最多三個時段。
 
-    先依「穩定」與「有天氣系統影響」切段;超過三段時,把最短的相鄰兩段併在一起,
-    標題寫成「回暖 → 鋒面通過」這樣的先後順序。
+    天氣最相近的連續日子分在同一段:比較高低溫、降雨機率、850 hPa 溫度、海平面氣壓、
+    500 hPa 高度,以及當天的天氣系統是冷空氣、降雨系統還是穩定。所以冷空氣到達的那天
+    一定會是新時段的開始,即使背風面沒有下雨。標題依時間順序寫主要的天氣系統。
     """
-    groups = _group([role.kind for role in roles])
+    groups = split_week(_features(forecast, roles, patterns))
     rows = {r.day: r for r in upper_days or []}
     out = []
     for index, members in enumerate(groups, 1):
@@ -311,14 +490,15 @@ def stages(
             Stage(
                 index=index,
                 days=[fc.day for fc in days],
-                headline=" → ".join(dict.fromkeys(roles[i].system for i in members)),
+                headline=stage_headline([roles[i].system for i in members]),
                 weather=_weather(days),
                 tmax=(min(fc.tmax.p50 for fc in days), max(fc.tmax.p50 for fc in days)),
                 tmin=(min(fc.tmin.p50 for fc in days), max(fc.tmin.p50 for fc in days)),
                 pop=(min(fc.pop for fc in days), max(fc.pop for fc in days)),
                 confidence=score,
                 confidence_label=confidence_label(score),
-                stable=all(roles[i].kind in STABLE for i in members),
+                stable=not any(affected(roles[i].kind, forecast[i].pop) for i in members),
+                tone=stage_tone([roles[i].kind for i in members], [forecast[i].pop for i in members]),
                 reasons=[f"{label(weakest.day)}:" + "、".join(confidence_reasons(weakest))] if len(days) > 1 else confidence_reasons(weakest),
                 rationale=rationale,
                 coupling=coupling,
@@ -596,8 +776,8 @@ def build(
     longitude: float = 0.0,
 ) -> Briefing:
     southern = latitude < 0
-    roles = day_roles(forecast, signals, upper_days, latitude, longitude)
-    stage_list = stages(forecast, roles, upper_days, southern)
+    roles = day_roles(forecast, signals, upper_days, latitude, longitude, patterns)
+    stage_list = stages(forecast, roles, upper_days, southern, patterns)
     models = model_comparison(forecast)
     headline = "這一週" + ("分成 " + str(len(stage_list)) + " 段:" if len(stage_list) > 1 else ":") + ";".join(
         f"{s.span} {s.headline}" for s in stage_list

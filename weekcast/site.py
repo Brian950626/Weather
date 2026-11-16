@@ -94,14 +94,14 @@ tbody th{font-weight:600;white-space:nowrap}
 tbody tr:last-child>*{border-bottom:0}
 table.tight td,table.tight th,table.models td:not(:last-child){white-space:nowrap}
 table.models td:last-child{min-width:16em}
-table.zone td{white-space:nowrap}table.zone td:nth-child(2){white-space:normal;min-width:8em}
+table.zone td{white-space:nowrap}
 td small,th small{color:var(--ink2);font-size:13px}
 caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;padding:8px 12px 0}
 .wx{font-family:var(--kai);font-weight:700;font-size:16px}
 .ribwrap{overflow-x:auto;margin:6px 0 4px}
 .ribbon{display:grid;grid-template-columns:repeat(var(--n),minmax(94px,1fr));min-width:calc(var(--n)*94px);background:var(--sheet);border:1px solid var(--line);border-radius:4px}
 .stage{padding:7px 12px 9px;border-top:5px solid var(--ochre);border-bottom:1px solid var(--line);font-family:var(--kai);font-weight:700;line-height:1.4;background:var(--ochre-soft)}
-.stage.wet{border-top-color:var(--rain);background:var(--rain-soft)}
+.stage.rain{border-top-color:var(--rain);background:var(--rain-soft)}.stage.cold{border-top-color:var(--cold);background:var(--cold-soft)}
 .stage small{display:block;font:400 12px/1.5 var(--sans);color:var(--ink2)}
 .stage small.say{font-size:13px;margin-top:2px}
 .zone small{display:block;font-size:12px;line-height:1.45;color:var(--muted);font-weight:400;max-width:17em;white-space:normal}
@@ -144,13 +144,13 @@ details.nums dt{font-weight:600;color:var(--ink);white-space:nowrap}details.nums
 #fmsg{font-size:14px;color:var(--ink2)}#hits{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}
 .stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));background:var(--sheet);border:1px solid var(--line);border-radius:4px;margin:10px 0}
 .stg{padding:14px 18px 16px;border-top:5px solid var(--ochre)}
-.stg.wet{border-top-color:var(--rain)}
+.stg.rain{border-top-color:var(--rain)}.stg.cold{border-top-color:var(--cold)}
 .stg .when{font-size:13px;color:var(--ink2);margin:0}
 .stg h3{margin:2px 0 8px;font-size:20px}
 .stg p{margin:6px 0;font-size:15px}
 .stg .why{font-size:13px;color:var(--ink2)}
 .reason{margin:14px 0 22px;padding-left:16px;border-left:5px solid var(--ochre)}
-.reason.wet{border-left-color:var(--rain)}
+.reason.rain{border-left-color:var(--rain)}.reason.cold{border-left-color:var(--cold)}
 .reason h3{margin-top:0}
 .reason dl{margin:6px 0;display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;font-size:15px;max-width:60em}
 .reason dt{font-weight:600;white-space:nowrap}.reason dd{margin:0}
@@ -499,7 +499,7 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
         # --o 是手機版(每天一列)的排列順序:時段標題排在它的第一天前面
         order = index.get(stage.days[0], 1) * 10 - 5
         parts.append(
-            f'<div class="stage s{stage.index}{"" if stage.stable else " wet"}" style="grid-column:span {len(stage.days)};--o:{order}">'
+            f'<div class="stage s{stage.index} {stage.tone}" style="grid-column:span {len(stage.days)};--o:{order}">'
             f"<small>時段{ORDINALS[stage.index - 1]}</small>{esc(stage.headline)}"
             f'<small class="say">{esc(plain.system_words(stage.headline))}</small></div>'
         )
@@ -522,7 +522,7 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
     parts.append("</div></div>")
     parts.append(
         '<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。'
-        "綠色的時段有天氣系統影響;時段名稱下方的小字是白話說明。</p>"
+        "時段的顏色:綠色是降雨系統、藍色是冷空氣、黃褐色是天氣穩定;時段名稱下方的小字是白話說明。</p>"
     )
     return "".join(parts)
 
@@ -622,7 +622,7 @@ def _period_grid(rows) -> str:
 
 def _summary_view(forecast, brief, comparison) -> str:
     blocks = "".join(
-        f'<div class="stg{"" if s.stable else " wet"}"><p class="when">時段{ORDINALS[s.index - 1]} {esc(s.span)}</p><h3>{esc(s.headline)}</h3>'
+        f'<div class="stg {s.tone}"><p class="when">時段{ORDINALS[s.index - 1]} {esc(s.span)}</p><h3>{esc(s.headline)}</h3>'
         f"<p>{esc(s.weather)},高溫 {esc(briefing._range(s.tmax, '°C'))}、低溫 {esc(briefing._range(s.tmin, '°C'))},"
         f"降雨機率 {esc(briefing._range([p * 100 for p in s.pop], '%'))}。</p>"
         f'<p>{_meter(s.confidence_label)}</p><p class="why">{esc(";".join(s.reasons))}</p></div>'
@@ -675,7 +675,7 @@ def _synoptic_view(forecast, brief, upper_days, signal_list, southern: bool) -> 
         for s in brief.stages:
             items = "".join(f"<dt>{esc(level)}</dt><dd>{esc(text)}</dd>" for level, text in s.rationale)
             parts.append(
-                f'<div class="reason{"" if s.stable else " wet"}"><h3>時段{ORDINALS[s.index - 1]} {esc(s.span)} {esc(s.headline)}</h3>'
+                f'<div class="reason {s.tone}"><h3>時段{ORDINALS[s.index - 1]} {esc(s.span)} {esc(s.headline)}</h3>'
                 f"<dl>{items}<dt>垂直結構檢查</dt><dd>{esc(s.coupling)}</dd></dl></div>"
             )
         parts += [
@@ -1195,31 +1195,36 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
     if not payloads or not all(n in payloads and payloads[n].get("briefing") for n in names):
         links = "".join(f'<li><a href="#/place/{i}/summary">{esc(n)}</a></li>' for i, n in enumerate(names))
         return f'<h1>一週天氣預報</h1><ul>{links}</ul>'
-    stages = briefing.outline([payloads[n]["briefing"]["roles"] for n in names])
-    systems = {day: system for stage in stages for day, system in stage["systems"].items()}
-    if len(stages) > 1:
-        lede = f"這一週分成 {len(stages)} 段:" + ";".join(f"{briefing._span(s['days'])} {s['headline']}" for s in stages) + "。"
-    else:
-        lede = f"這一週:{stages[0]['headline']}。"
-    head = "<th>日期</th><th>主要影響系統<small>多數地點的判斷</small></th>" + "".join(f'<th><a href="#/place/{i}/summary">{esc(n)}</a></th>' for i, n in enumerate(names))
     by_place = {n: {d["day"]: d for d in payloads[n]["days"]} for n in names}
+    systems = {n: {r["day"]: r["system"] for r in payloads[n]["briefing"]["roles"]} for n in names}
+    lede = briefing.island_summary(
+        [
+            {
+                "name": n,
+                "latitude": payloads[n]["location"].get("latitude") or 0.0,
+                "longitude": payloads[n]["location"].get("longitude") or 0.0,
+                "roles": payloads[n]["briefing"]["roles"],
+                "pops": {day: d["pop"] for day, d in by_place[n].items()},
+            }
+            for n in names
+        ]
+    )
+    head = "<th>日期</th>" + "".join(f'<th><a href="#/place/{i}/summary">{esc(n)}</a></th>' for i, n in enumerate(names))
     body = ""
-    for day in sorted(systems):
+    for day in sorted({day for n in names for day in by_place[n]}):
         cells = ""
         for n in names:
             d = by_place[n].get(day)
             cells += (
-                f'<td><span class="wx">{_icon(d["sky"])}{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small></td>'
+                f'<td><span class="wx">{_icon(d["sky"])}{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small>'
+                f'<br><small class="sys">{esc(systems[n].get(day, ""))}</small></td>'
                 if d else "<td>–</td>"
             )
-        body += (
-            f'<tr data-day="{day}"><th data-rel>{esc(_day(day))}</th>'
-            f"<td>{esc(systems[day])}<small>{esc(plain.system_words(systems[day]))}</small></td>{cells}</tr>"
-        )
+        body += f'<tr data-day="{day}"><th data-rel>{esc(_day(day))}</th>{cells}</tr>'
     table = (
         '<p class="swipe">表格可以左右滑動,看其他地點。</p>'
-        f'<div class="scroll"><table class="zone"><caption>氣溫為最低–最高,°C;括號內是降雨機率。點地名看那個地點的完整分析。'
-        '<span class="wide">主要影響系統下方的小字是白話說明。</span></caption>'
+        f'<div class="scroll"><table class="zone"><caption>每格依序是天氣、最低–最高氣溫(°C)與降雨機率,以及這個地點的主要影響系統。'
+        "點地名看那個地點的完整分析。</caption>"
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
     )
     boxes = "".join(
@@ -1242,7 +1247,8 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
         f'<h2>天氣系統怎麼演變</h2><p class="lede">{esc(lede)}</p>'
         f"<h2>逐日分區預報</h2>{table}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
-        '<p class="sub">主要影響系統取最多地點的判斷;各地點自己的分段、預報理由與信心度在<a href="#/place">地點預報</a>。'
+        '<p class="sub">分區以這些地點代表,同一個系統在各地的影響不一樣(例如東北季風下,迎風的北部與東部有雨,背風的中南部通常不下)。'
+        '各地點自己的分段、預報理由與信心度在<a href="#/place">地點預報</a>。'
         '接下來幾小時的雨看<a href="#/radar">即時雷達</a>。</p>'
     )
 
