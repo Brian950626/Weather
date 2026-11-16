@@ -803,7 +803,7 @@ class SiteTest(unittest.TestCase):
         self.assertIn('<article class="place" data-name="台北"', page)
         self.assertIn("逐日高空分析", page)
         self.assertEqual(page.count('class="d d'), 7)  # 時間軸每天一欄
-        self.assertEqual(page.count("<svg viewBox"), 2)  # 兩張圖表(天氣圖示另外算)
+        self.assertEqual(page.count('<svg viewBox="0 0 760'), 2)  # 兩張圖表(天氣圖示與橫幅另外算)
         self.assertEqual(len(data["places"]["台北"]["days"]), 7)
         # 四個頁面都在同一個檔案裡,用網址切換;地點頁有六個分頁
         for name in ("overview", "place", "radar", "about"):
@@ -1431,6 +1431,109 @@ class WeatherIconTest(unittest.TestCase):
         about = self.page[self.page.index('<section class="page" data-page="about"'):]
         self.assertIn("<h2>天氣圖示</h2>", about)
         self.assertEqual(about[about.index('class="icons"'):about.index("<h2>名詞解釋</h2>")].count('class="ico"'), 9)
+
+
+class WorldPlacesTest(unittest.TestCase):
+    """國外地點:內建世界主要城市,預報邏輯在臺灣以外也要站得住。"""
+
+    def test_city_list_is_sane(self):
+        from weekcast.cities import CITIES
+
+        self.assertGreaterEqual(len(CITIES), 180)
+        self.assertEqual(len({c[0] for c in CITIES}), len(CITIES))
+        for chinese, english, country, lat, lon in CITIES:
+            self.assertTrue(-90 <= lat <= 90 and -180 <= lon <= 180, chinese)
+            self.assertTrue(chinese and english and country, chinese)
+        where = {c[0]: (c[3], c[4]) for c in CITIES}
+        for name, (lat, lon) in {"東京": (35.7, 139.7), "紐約": (40.7, -74.0), "倫敦": (51.5, -0.1), "雪梨": (-33.9, 151.2), "開普敦": (-33.9, 18.4)}.items():
+            self.assertAlmostEqual(where[name][0], lat, delta=0.2, msg=name)
+            self.assertAlmostEqual(where[name][1], lon, delta=0.2, msg=name)
+
+    def test_cities_are_found_by_chinese_or_english_name(self):
+        first = lambda q: client.find_cities(q)[0][0]
+        self.assertEqual(first("東京"), "東京(日本)")
+        self.assertEqual(first("tokyo"), "東京(日本)")
+        self.assertEqual(first("New York"), "紐約(美國)")
+        self.assertEqual([c[0] for c in client.find_cities("聖地牙哥")], ["聖地牙哥(美國)", "聖地牙哥(智利)"])
+        self.assertGreaterEqual(len(client.find_cities("日本")), 5)  # 打國名列出該國的城市
+        self.assertEqual(client.find_cities("東")[0][0], "東京(日本)")  # 開頭相符就列出
+        self.assertEqual(client.find_cities("敦"), [])  # 只有一個字時不比對「包含」,以免洗版
+        self.assertEqual(client.find_cities(""), [])
+
+    def test_command_line_lookup_prefers_taiwan_then_world_cities(self):
+        self.assertEqual(client.geocode("Paris").name, "巴黎")
+        self.assertEqual(client.geocode("東京").country, "日本")
+        self.assertEqual(client.geocode("東港").country, "台灣")
+
+    def test_page_carries_the_city_list(self):
+        from weekcast import site
+
+        page = site.build_page([("台北", "", 25.0, 121.5)], datetime(2026, 1, 1, tzinfo=timezone.utc), [])
+        self.assertIn('["東京","Tokyo","日本",', page)
+        self.assertNotIn("__CITIES__", page)
+        self.assertIn("geocoding-api.open-meteo.com", page)
+
+    def test_no_trough_overhead_does_not_break_the_passage_check(self):
+        # 紐約實際遇到:前一天是「槽前」但剖面上找不到槽線(trough 是 None)
+        row = lambda day, regime, trough: upper.UpperDay(day=day, regime=regime, trough=trough)
+        self.assertIsNone(upper.trough_passage([row("d1", "槽前", None), row("d2", "槽後", 20.0)]))
+        self.assertIsNone(upper.trough_passage([row("d1", "平直", None), row("d2", "脊線上", None)]))
+
+    def test_freezing_wet_day_mentions_snow(self):
+        from weekcast import plain
+
+        fc = analysis.daily_forecast(load_surface(), 7)[3]
+        cold = analysis.DayForecast(**{**fc.__dict__, "pop": 0.8, "tmax": analysis.Spread(-3, -1, 1), "tmin": analysis.Spread(-9, -7, -5)})
+        self.assertIn("降下來的可能是雪", plain._weather(cold, None, None))
+        mild = analysis.DayForecast(**{**fc.__dict__, "pop": 0.8})
+        self.assertNotIn("雪", plain._weather(mild, None, None))
+
+    def test_tropical_wording_is_not_used_at_high_latitudes(self):
+        from weekcast import briefing, plain
+
+        text = Path(briefing.__file__).read_text(encoding="utf-8")
+        self.assertIn('"低壓或熱帶系統接近" if abs(latitude) < 35 else "低壓接近"', text)
+        self.assertIn("低壓接近", plain.SYSTEMS)
+
+
+class HeroBannerTest(unittest.TestCase):
+    """地點頁最上方的天氣景象橫幅(動畫用開源的 Anime.js)。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    def test_banner_carries_each_day_for_the_browser_to_draw(self):
+        import html as html_module
+        import re
+
+        raw = re.search(r'<div class="hero" data-days="([^"]*)">', self.page).group(1)
+        days = json.loads(html_module.unescape(raw))
+        self.assertEqual(len(days), 7)
+        self.assertEqual(set(days[0]), {"day", "sky", "hi", "lo", "pop", "wind", "cloud"})
+        self.assertEqual(days[0]["day"], "2026-11-12")
+        self.assertTrue(all(0 <= d["pop"] <= 100 for d in days))
+
+    def test_every_sky_wording_has_a_scene(self):
+        scene = self.site.HERO_JS[self.site.HERO_JS.index("const SCENE="):self.site.HERO_JS.index("};")]
+        for sky in self.site.ICON_FOR:
+            self.assertIn(f"'{sky}':", scene, sky)
+
+    def test_banner_comes_first_and_degrades_gracefully(self):
+        place = self.page[self.page.index('<article class="place"'):]
+        self.assertLess(place.index('class="hero"'), place.index('class="week"'))
+        self.assertIn("prefers-reduced-motion", self.page)  # 讀者關閉動態效果時不動
+        self.assertIn("if(calm||!window.anime)return", self.page)  # 函式庫沒載入時仍顯示靜止畫面
+        self.assertEqual(self.page.count(self.site.ANIME_URL), 1)
+        self.assertIn("animejs/3.2.2", self.site.ANIME_URL)  # 固定版本
+
+    def test_looked_up_places_get_a_banner_too(self):
+        self.assertIn("if(window.heroPaint)heroPaint()", self.page)
 
 
 if __name__ == "__main__":

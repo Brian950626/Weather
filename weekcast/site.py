@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import analysis, briefing, client, history, periods, plain, report, upper, verify
+from .cities import CITIES
 from .towns import TOWNS
 
 DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
@@ -158,6 +159,28 @@ details.how summary{cursor:pointer;color:var(--ink)}
 .verdict-ok{color:var(--rain);font-weight:600}.verdict-miss{color:var(--warm);font-weight:600}.verdict-fa{color:var(--ochre);font-weight:600}
 svg{display:block;min-width:620px;width:100%}
 svg.sprite{position:absolute;min-width:0;width:0;height:0}
+/* 天氣景象橫幅 */
+.hero{position:relative;height:190px;border-radius:6px;overflow:hidden;margin:8px 0 18px;border:1px solid var(--line);
+--sky1:#8fc3ee;--sky2:#dff0fb;--hill1:#9fc6ae;--hill2:#5f9a7b;--hcloud:#ffffff;--hdark:#c9d3d8;--cap:#12202b}
+.hero.mild{--sky1:#a9c6dd;--sky2:#e6eef3;--hcloud:#f6f9fa}
+.hero.grey{--sky1:#9fb0ba;--sky2:#d8dfe2;--hill1:#93ab9d;--hill2:#5a8370;--hcloud:#e9eef0;--hdark:#aab6bc}
+.hero.wet{--sky1:#73858f;--sky2:#b9c5c9;--hill1:#7f978a;--hill2:#476f5d;--hcloud:#d3dbde;--hdark:#8d9aa1;--cap:#0e1a22}
+@media (prefers-color-scheme:dark){.hero{--sky1:#17354f;--sky2:#2c5878;--hill1:#2f5544;--hill2:#1c3a2d;--hcloud:#8fa3b1;--hdark:#5c6f7b;--cap:#f1f6f8}
+.hero.mild{--sky1:#1d3445;--sky2:#35536a}.hero.grey{--sky1:#232f37;--sky2:#3b4a54;--hcloud:#7f8f99;--hdark:#55646d}
+.hero.wet{--sky1:#1a242a;--sky2:#2f3d45;--hcloud:#6c7b84;--hdark:#48565e;--cap:#f1f6f8}}
+.hero svg{position:absolute;inset:0;width:100%;height:100%;min-width:0}
+.hero .sky{fill:url(#none);fill:var(--sky2)}
+.hero{background:linear-gradient(var(--sky1),var(--sky2))}.hero .sky{fill:transparent}
+.hero .disc{fill:var(--sun)}.hero .glow{fill:var(--sun);opacity:.28}.hero .rays line{stroke:var(--sun);stroke-width:5;stroke-linecap:round}
+.hero .cl{fill:var(--hcloud);opacity:.92}.hero .cl.dk{fill:var(--hdark)}
+.hero .drop{stroke:var(--rain);stroke-width:2.6;stroke-linecap:round;opacity:.85}
+.hero .hill{fill:var(--hill2)}.hero .hill.far{fill:var(--hill1)}
+.hero .cap{position:absolute;left:20px;bottom:16px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;color:var(--cap);
+text-shadow:0 1px 6px color-mix(in srgb,var(--sky2) 70%,transparent)}
+.hero .cap .when{font-size:14px;font-weight:600;flex-basis:100%}
+.hero .cap b{font-family:var(--kai);font-size:34px;line-height:1.1}
+.hero .cap .t{font-size:26px;font-weight:700}.hero .cap .t i{font-style:normal;font-weight:400;font-size:18px}
+.hero .cap .p{font-size:15px;font-weight:600}
 svg.ico{display:inline-block;min-width:0;width:1.7em;height:1.7em;vertical-align:-.5em;margin-right:.25em;flex:none;overflow:visible}
 .d .wx .ico{display:block;width:44px;height:44px;margin:0 auto 2px}
 .zone .wx .ico{width:30px;height:30px;vertical-align:-9px}
@@ -202,6 +225,7 @@ details.nums dl{grid-template-columns:1fr}details.nums dt{margin-top:6px}
 .d .conf{grid-area:conf;flex-wrap:nowrap;justify-self:end}.d .conf em{flex-basis:auto;margin-left:5px}
 .swipe{display:block}.zone th:nth-child(2),.zone td:nth-child(2),.wide{display:none}
 .week .wh{font-size:21px}
+.hero{height:160px}.hero .cap{left:14px;bottom:12px}.hero .cap b{font-size:28px}.hero .cap .t{font-size:22px}
 }
 @media (min-width:761px){.stg+.stg{border-left:1px solid var(--line)}}
 """
@@ -298,10 +322,10 @@ async function compute(s){delete s.dataset.pending;const w=s.querySelector('.wai
  try{w.textContent='正在載入分析程式,第一次約需 10–20 秒。';const p=await engine();
   w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析。';
   const html=await p.globals.get('forecast')(s.dataset.name,+s.dataset.lat,+s.dataset.lon);
-  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint();markDays()}
+  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint();markDays();if(window.heroPaint)heroPaint()}
  catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+explain(e)+'請再點一次這個地點重試。'}}
 // 把程式或瀏覽器的英文錯誤訊息換成看得懂的中文
-function explain(e){const t=String(e&&e.message||e);
+function explain(e){const t=String(e&&e.message||e);try{console.warn('weekcast:',t)}catch(x){}
  if(/minutely|hourly/i.test(t)&&/limit/i.test(t))return '氣象資料來源暫時忙線(短時間內查詢太多次),等一分鐘。';
  if(/daily/i.test(t)&&/limit/i.test(t))return '今天向氣象資料來源查詢的次數已達上限,明天才能再查。';
  if(/failed to fetch|networkerror|load failed|network/i.test(t))return '連不上網路或資料來源,請確認網路連線。';
@@ -312,12 +336,17 @@ function open(name,lat,lon){hits.innerHTML='';msg.textContent='';box.value='';
  const list=saved();if(!list.some(p=>p.name===name&&p.lat==lat)){list.push({name,lat,lon});keep(list)}
  go('place',addTab(name,lat,lon),TABS[0])}
 // 先查內建的臺灣鄉鎮市區清單(不連網、一定是中文);查不到才問外部的地名服務
-const TOWNS=__TOWNS__,norm=t=>t.trim().replace(/臺/g,'台').replace(/\\s+/g,'');
+const TOWNS=__TOWNS__,CITIES=__CITIES__,norm=t=>t.trim().replace(/臺/g,'台').replace(/\\s+/g,'');
 function localHits(text){const q=norm(text);if(!q)return [];const out=[];
  for(const [county,town,lat,lon] of TOWNS){const base=town.slice(0,-1),c=county.slice(0,-1);
   const forms=[town,base,county+town,county+base,c+town,c+base];
   const rank=forms.includes(q)?0:(town.startsWith(q)||(county+town).startsWith(q))?1:(county+town).includes(q)?2:-1;
   if(rank>=0)out.push({rank,name:county+town,where:'',lat,lon})}
+ // 世界主要城市:中文名或英文名都可以
+ const low=text.trim().toLowerCase();
+ for(const [zh,en,country,lat,lon] of CITIES){const name=zh.replace(/臺/g,'台'),e=en.toLowerCase(),bare=name.split('(')[0];
+  const rank=(q===name||q===bare||low===e)?0:(name.startsWith(q)||e.startsWith(low))?1:(q.length>=2&&(name.includes(q)||e.includes(low)||q===country))?2:-1;
+  if(rank>=0)out.push({rank,name:bare,where:country,lat,lon})}
  return out.sort((a,b)=>a.rank-b.rank).slice(0,8)}
 function offer(list,note){hits.innerHTML='';msg.textContent=note;
  list.forEach(o=>{const b=document.createElement('button');b.type='button';
@@ -333,6 +362,10 @@ form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.tr
  if(found.length===1){open(found[0].name,found[0].lat,found[0].lon);return}
  if(found.length){offer(found,'請選擇:');return}
  msg.textContent='搜尋中';
+ // 清單裡沒有的地名:先問氣象資料來源自己的地名服務(較穩定,有中文名就用中文),問不到再問 Photon
+ try{const g=await(await fetch('https://geocoding-api.open-meteo.com/v1/search?count=8&language=zh&name='+encodeURIComponent(q))).json();
+  const found=(g.results||[]).map(r=>({name:r.name,where:[r.admin1,r.country].filter((v,i,a)=>v&&v!==r.name&&a.indexOf(v)===i).join('、'),lat:r.latitude,lon:r.longitude}));
+  if(found.length){offer(found.slice(0,6),'請選擇:');return}}catch(err){}
  try{const url='https://photon.komoot.io/api/?limit=8&lat=23.7&lon=121&q='+encodeURIComponent(q);
   // lang=default 讓地名用當地的文字,不跟著瀏覽器的語言變成英文;服務不接受這個參數時退回原本的查法
   let r=await fetch(url+'&lang=default');if(!r.ok)r=await fetch(url);
@@ -343,7 +376,7 @@ form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.tr
    const key=lat.toFixed(1)+','+lon.toFixed(1);if(seen.has(key))continue;seen.add(key);out.push({name:p.name||q,where,lat,lon})}
   if(!out.length){msg.textContent='找不到「'+q+'」。臺灣的地點請輸入鄉鎮市區的名稱(例如 東港、恆春鎮、屏東縣枋山鄉),或輸入座標,例如 22.37,120.59';return}
   offer(out.slice(0,6),'請選擇:')}
- catch(err){msg.textContent='找不到「'+q+'」。臺灣的地點請輸入鄉鎮市區的名稱(例如 東港、恆春鎮);國外地名的查詢服務目前連不上,可以改輸入座標,例如 35.68,139.69'}});
+ catch(err){msg.textContent='找不到「'+q+'」。臺灣請輸入鄉鎮市區(例如 東港、恆春鎮);國外請輸入城市的中文或英文名(例如 東京、Paris),或直接輸入座標,例如 35.68,139.69'}});
 saved().forEach(p=>addTab(p.name,p.lat,p.lon));
 route();
 """
@@ -763,6 +796,23 @@ def _week_box(week: dict | None, link: str = "") -> str:
     )
 
 
+def _hero(forecast) -> str:
+    """地點頁最上方的天氣景象:太陽、雲、雨的動畫橫幅。
+
+    這裡只放每天的資料,畫面由瀏覽器端的 HERO_JS 依「讀者的今天」畫出來;動畫用開源的
+    Anime.js(MIT 授權),載入失敗或讀者關閉動態效果時,仍會顯示靜止的畫面。
+    """
+    days = [
+        {
+            "day": f.day, "sky": f.sky, "hi": round(f.tmax.p50), "lo": round(f.tmin.p50), "pop": round(f.pop * 100),
+            "wind": round(f.wind.p50) if f.wind else 0, "cloud": round(f.cloud.p50) if f.cloud else 50,
+        }
+        for f in forecast
+    ]
+    data = esc(json.dumps(days, ensure_ascii=False, separators=(",", ":")))
+    return f'<div class="hero" data-days="{data}"></div>'
+
+
 def _numbers_help() -> str:
     """時間軸下方的「這些數字怎麼看」:降雨機率、雨量、括號、信心度、風速。"""
     rows = "".join(f"<dt>{esc(term)}</dt><dd>{esc(text)}</dd>" for term, text in plain.HOW_TO_READ)
@@ -911,7 +961,8 @@ def build_place(
     total = sum(ens.member_count(s) for s in ens.systems)
     week = plain.week_summary(forecast, upper_days)
     block = (
-        _week_box(asdict(week) if week else None, '<p class="sub">每天的原因和準備建議在下方「白話總結」分頁;想看專業的分析依據,請看其他分頁。</p>')
+        _hero(forecast)
+        + _week_box(asdict(week) if week else None, '<p class="sub">每天的原因和準備建議在下方「白話總結」分頁;想看專業的分析依據,請看其他分頁。</p>')
         + _ribbon(forecast, brief)
         + _numbers_help()
         + f'<p class="sub">預報取自最接近的模式格點({abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"},'
@@ -933,7 +984,7 @@ def build_place(
 # --------------------------------------------------------------------------- #
 
 SEARCH_HTML = """<form id="find" role="search"><input id="q" type="search" autocomplete="off"
-placeholder="查其他地點:東港、恆春鎮、Tokyo 或 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
+placeholder="查其他地點:東港、恆春鎮、東京、New York 或座標 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
 <span id="fmsg"></span><div id="hits"></div></form>"""
 
 RADAR_HTML = """<section class="page" data-page="radar" id="radar"><h1>即時雷達回波</h1>
@@ -1039,6 +1090,59 @@ ABOUT_HTML = (
     f'<li><a href="data.json">data.json</a>:這一頁所有數字的原始資料。<a href="{REPO_URL}">原始碼與方法筆記</a>。</li>'
     "</ul></section>"
 )
+
+ANIME_URL = "https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"
+
+# 天氣景象橫幅。依當天的天氣用語決定畫什麼:有沒有太陽、雲多不多、雨下多大;風越大,雲飄得越快、雨越斜。
+HERO_JS = """
+(function(){
+const SCENE={'晴':[1,0,0],'晴時多雲':[1,1,0],'多雲':[0,2,0],'陰':[0,3,0],'晴偶陣雨':[1,1,1],'多雲偶雨':[0,2,1],
+ '可能有雨':[0,3,2],'有雨':[0,3,3],'明顯降雨':[0,3,4],'大雨':[0,3,5]};
+const CLOUD='M13 34a8 8 0 0 1-.6-16A11 11 0 0 1 33.5 15 9.5 9.5 0 0 1 35 34z';
+const calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+let live=[];
+function iso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function draw(box){let days;try{days=JSON.parse(box.dataset.days)}catch(e){return}
+ if(!days.length)return;const today=iso(new Date());
+ const d=days.find(x=>x.day===today)||days.find(x=>x.day>today)||days[0];
+ const [sun,cloud,rain]=SCENE[d.sky]||[0,2,0];
+ const tone=rain>=2?'wet':cloud>=3?'grey':cloud>=2?'mild':'clear';
+ let g='<svg viewBox="0 0 1200 240" preserveAspectRatio="xMidYMid slice" aria-hidden="true">';
+ g+='<rect class="sky" width="1200" height="240"/>';
+ if(sun){g+='<g class="sun" transform="translate(830 72)"><circle class="glow" r="70"/><g class="rays">';
+  for(let i=0;i<12;i++)g+='<line x1="0" y1="-44" x2="0" y2="-58" transform="rotate('+i*30+')"/>';
+  g+='</g><circle class="disc" r="34"/></g>'}
+ const n=[0,3,5,7][cloud];
+ for(let i=0;i<n;i++){const sc=2.2+((i*37)%5)*0.55,x=(i*211+90)%1150,y=18+((i*53)%4)*22;
+  g+='<g class="drift" data-i="'+i+'"><path class="cl'+(cloud>=3&&i%2?' dk':'')+'" d="'+CLOUD+'" transform="translate('+x+' '+y+') scale('+sc.toFixed(2)+')"/></g>'}
+ const slant=Math.min(60,d.wind*1.6),drops=[0,14,26,40,56,72][rain];
+ if(drops){g+='<g class="rain">';
+  for(let i=0;i<drops;i++){const x=(i*163+40)%1260-30,y=((i*71)%200)-20,len=16+rain*4;
+   g+='<line class="drop" x1="'+x+'" y1="'+y+'" x2="'+(x-slant*len/60).toFixed(1)+'" y2="'+(y+len)+'"/>'}
+  g+='</g>'}
+ g+='<path class="hill far" d="M0 240V186c120-34 210-8 330-30s200-52 320-28 190 44 300 20 160-40 250-22v94z"/>';
+ g+='<path class="hill" d="M0 240V208c150-26 260 6 400-12s240-30 380-10 250 26 420 4v50z"/></svg>';
+ const word=d.day===today?'今天':d.day>today?'接下來':'最近一筆';
+ g+='<div class="cap"><span class="when">'+word+' '+(+d.day.slice(5,7))+'/'+(+d.day.slice(8,10))+'</span><b>'+d.sky+'</b>'
+  +'<span class="t">'+d.hi+'° <i>/ '+d.lo+'°</i></span><span class="p">降雨機率 '+d.pop+'%</span></div>';
+ box.className='hero '+tone;box.innerHTML=g;box.dataset.wind=d.wind}
+function move(box){if(calm||!window.anime)return;
+ const wind=+box.dataset.wind||0,speed=Math.max(0.5,Math.min(3,wind/14));
+ box.querySelectorAll('.drift').forEach((el,i)=>{live.push(anime({targets:el,translateX:[-60-i*12,80+i*18],duration:(26000+i*5200)/speed,
+  direction:'alternate',easing:'easeInOutSine',loop:true}))});
+ const rays=box.querySelector('.rays');if(rays)live.push(anime({targets:rays,rotate:360,duration:90000,easing:'linear',loop:true}));
+ const glow=box.querySelector('.glow');if(glow)live.push(anime({targets:glow,scale:[1,1.12],opacity:[0.22,0.36],duration:4200,direction:'alternate',easing:'easeInOutSine',loop:true}));
+ const drops=box.querySelectorAll('.drop');
+ drops.forEach((el,i)=>{const a=anime({targets:el,translateY:[-70,270],duration:760+(i*53)%420,easing:'linear',loop:true});
+  a.seek(((i*197)%1000)/1000*a.duration);live.push(a)})}
+// 只讓目前看得到的那個地點動,切換地點時重畫
+window.heroPaint=function(){live.forEach(a=>a.pause());live=[];
+ document.querySelectorAll('.hero').forEach(draw);
+ const on=document.querySelector('.page.on article.place.on .hero');if(on)move(on)};
+window.addEventListener('hashchange',()=>setTimeout(heroPaint,0));
+heroPaint();
+})();
+"""
 
 RADAR_JS = """
 (function(){
@@ -1168,7 +1272,7 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str], pa
     missing = f'<p class="sub">這次沒能更新:{esc("、".join(failed))}。</p>' if failed else ""
     script = JS.replace("__TABS__", json.dumps([key for key, _ in TABS])).replace(
         "__TOWNS__", json.dumps([list(t) for t in TOWNS], ensure_ascii=False, separators=(",", ":"))
-    )
+    ).replace("__CITIES__", json.dumps([list(c) for c in CITIES], ensure_ascii=False, separators=(",", ":")))
     return (
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'
@@ -1185,7 +1289,8 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str], pa
         "不是官方預報。颱風與災害性天氣請以中央氣象署為準。</footer>"
         '</main><div id="tip"></div>'
         + (f'<script src="{leaflet}.js"></script>' if radar else "")
-        + f"<script>{script}{RADAR_JS if radar else ''}</script></body></html>"
+        + f'<script src="{ANIME_URL}"></script>'
+        + f"<script>{script}{RADAR_JS if radar else ''}{HERO_JS}</script></body></html>"
     )
 
 

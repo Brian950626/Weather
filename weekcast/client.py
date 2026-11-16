@@ -86,6 +86,30 @@ def find_towns(query: str, limit: int = 8) -> list[tuple[str, float, float]]:
     return [(label, lat, lon) for _, label, lat, lon in ranked[:limit]]
 
 
+def find_cities(query: str, limit: int = 8) -> list[tuple[str, float, float]]:
+    """在內建的世界主要城市清單裡找,回傳 [(中文名(國家), 緯度, 經度)]。中文或英文名都可以,不連網。"""
+    from .cities import CITIES
+
+    q = query.strip().replace("臺", "台")
+    low = q.lower()
+    if not q:
+        return []
+    ranked = []
+    for chinese, english, country, lat, lon in CITIES:
+        name, eng = chinese.replace("臺", "台"), english.lower()
+        if q == name or low == eng or q == name.split("(")[0]:
+            rank = 0
+        elif name.startswith(q) or eng.startswith(low):
+            rank = 1
+        elif len(q) >= 2 and (q in name or low in eng or q == country):
+            rank = 2
+        else:
+            continue
+        ranked.append((rank, chinese if "(" in chinese else f"{chinese}({country})", lat, lon))
+    ranked.sort(key=lambda r: r[0])
+    return [(label, lat, lon) for _, label, lat, lon in ranked[:limit]]
+
+
 class FetchError(RuntimeError):
     """資料來源無法回應(網路、額度或參數問題)。"""
 
@@ -164,6 +188,11 @@ def geocode(name: str) -> Place:
         return Place(label, lat, lon, "台灣")
     if len(exact) > 1:
         raise FetchError(f"有好幾個「{name}」:{'、'.join(t[0] for t in exact)}。請連縣市一起輸入")
+    cities = find_cities(name)
+    if cities and not towns:
+        best = [c for c in cities if name.strip().lower() in (c[0].split("(")[0].lower(),)] or cities[:1]
+        label, lat, lon = best[0]
+        return Place(label.split("(")[0], lat, lon, label[label.index("(") + 1 : -1] if "(" in label else "")
     data = _get_json(GEOCODE_URL, {"name": name.strip(), "count": 1})
     results = data.get("results") or []
     if not results:
