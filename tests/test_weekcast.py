@@ -803,7 +803,7 @@ class SiteTest(unittest.TestCase):
         self.assertIn('<article class="place" data-name="台北"', page)
         self.assertIn("逐日高空分析", page)
         self.assertEqual(page.count('class="d d'), 7)  # 時間軸每天一欄
-        self.assertEqual(page.count("<svg viewBox"), 2)  # 兩張圖表(天氣圖示另外算)
+        self.assertEqual(page.count('<svg viewBox="0 0 720'), 2)  # 兩張圖表(天氣圖示與橫幅另外算)
         self.assertEqual(len(data["places"]["台北"]["days"]), 7)
         # 四個頁面都在同一個檔案裡,用網址切換;地點頁有六個分頁
         for name in ("overview", "place", "radar", "about"):
@@ -1494,6 +1494,46 @@ class WorldPlacesTest(unittest.TestCase):
         text = Path(briefing.__file__).read_text(encoding="utf-8")
         self.assertIn('"低壓或熱帶系統接近" if abs(latitude) < 35 else "低壓接近"', text)
         self.assertIn("低壓接近", plain.SYSTEMS)
+
+
+class HeroBannerTest(unittest.TestCase):
+    """地點頁最上方的天氣景象橫幅(動畫用開源的 Anime.js)。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    def test_banner_carries_each_day_for_the_browser_to_draw(self):
+        import html as html_module
+        import re
+
+        raw = re.search(r'<div class="hero" data-days="([^"]*)">', self.page).group(1)
+        days = json.loads(html_module.unescape(raw))
+        self.assertEqual(len(days), 7)
+        self.assertEqual(set(days[0]), {"day", "sky", "hi", "lo", "pop", "wind", "cloud"})
+        self.assertEqual(days[0]["day"], "2026-11-12")
+        self.assertTrue(all(0 <= d["pop"] <= 100 for d in days))
+
+    def test_every_sky_wording_has_a_scene(self):
+        scene = self.site.HERO_JS[self.site.HERO_JS.index("const SCENE="):self.site.HERO_JS.index("};")]
+        for sky in self.site.ICON_FOR:
+            self.assertIn(f"'{sky}':", scene, sky)
+
+    def test_banner_comes_first_and_degrades_gracefully(self):
+        place = self.page[self.page.index('<article class="place"'):]
+        self.assertLess(place.index('class="hero"'), place.index('class="week"'))
+        self.assertIn("prefers-reduced-motion", self.page)  # 讀者關閉動態效果時不動
+        self.assertIn("if(calm||!window.anime)return", self.page)  # 函式庫沒載入時仍顯示靜止畫面
+        self.assertEqual(self.page.count(self.site.ANIME_URL), 1)
+        self.assertIn("animejs/3.2.2", self.site.ANIME_URL)  # 固定版本
+
+    def test_looked_up_places_get_a_banner_too(self):
+        self.assertIn("if(window.heroPaint)heroPaint()", self.page)
 
 
 if __name__ == "__main__":
