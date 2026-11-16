@@ -1640,5 +1640,59 @@ class HeroBannerTest(unittest.TestCase):
         self.assertIn("if(window.heroPaint)heroPaint()", self.page)
 
 
+class EffectsTest(unittest.TestCase):
+    """全站的動態效果:輕量、可關閉,不改變內容。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    def test_no_extra_libraries(self):
+        import re
+
+        scripts = re.findall(r'<script src="([^"]+)"', self.page)
+        self.assertEqual(sorted(scripts), sorted([self.site.ANIME_URL, "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"]))
+
+    def test_page_stays_small(self):
+        import gzip
+
+        self.assertLess(len(gzip.compress(self.page.encode("utf-8"))), 60_000)  # 一個地點、壓縮後
+        self.assertLess(len(self.site.FX_JS.encode("utf-8")), 4_000)
+
+    def test_everything_respects_reduced_motion(self):
+        self.assertIn("if(calm||!window.anime)return", self.site.FX_JS)
+        css = self.page[self.page.index("<style>"):self.page.index("</style>")]
+        motion = css[css.index("@media (prefers-reduced-motion:no-preference){"):]
+        for name in ("@keyframes spin", "@keyframes fall", "@keyframes bob", "@keyframes fadein"):
+            self.assertIn(name, motion)  # 所有持續播放的動畫都只在讀者允許動態效果時才有
+
+    def test_icon_parts_are_grouped_for_animation(self):
+        shapes = self.site.ICON_SHAPES
+        self.assertIn('<g class="rays">', shapes["sun"])
+        self.assertIn('<g class="cloud">', shapes["cloud"])
+        self.assertIn('<g class="rain"', shapes["rain"])
+        # 雲的位置寫在 path 的 transform 屬性上,動畫只動外層 <g>,不會把位置蓋掉
+        self.assertIn('<g class="cloud"><path style=', shapes["cloud"])
+
+    def test_entrance_animation_returns_styling_to_css(self):
+        fx = self.site.FX_JS
+        self.assertIn("e.style.opacity='';e.style.transform=''", fx)  # 已過的日子仍維持半透明
+        self.assertIn("opacity:[0,base]", fx)
+
+    def test_overview_has_a_banner_for_the_first_place(self):
+        overview = self.page[self.page.index('<section class="page on" data-page="overview"'):self.page.index('<section class="page" data-page="place"')]
+        self.assertEqual(overview.count('<div class="hero"'), 1)
+        self.assertIn('data-name="台北"', overview)
+        self.assertLess(overview.index('class="hero"'), overview.index('class="wkd"'))
+
+    def test_looked_up_places_get_effects_too(self):
+        self.assertIn("if(window.fxRun)fxRun()", self.page)
+
+
 if __name__ == "__main__":
     unittest.main()
