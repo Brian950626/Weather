@@ -1457,7 +1457,7 @@ class WorldPlacesTest(unittest.TestCase):
         self.assertEqual([c[0] for c in client.find_cities("聖地牙哥")], ["聖地牙哥(美國)", "聖地牙哥(智利)"])
         self.assertGreaterEqual(len(client.find_cities("日本")), 5)  # 打國名列出該國的城市
         self.assertEqual(client.find_cities("東")[0][0], "東京(日本)")  # 開頭相符就列出
-        self.assertEqual(client.find_cities("約"), [])  # 只有一個字時不比對「包含」,以免洗版
+        self.assertEqual(client.find_cities("敦"), [])  # 只有一個字時不比對「包含」,以免洗版
         self.assertEqual(client.find_cities(""), [])
 
     def test_command_line_lookup_prefers_taiwan_then_world_cities(self):
