@@ -101,7 +101,7 @@ caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;pad
 .ribwrap{overflow-x:auto;margin:6px 0 4px}
 .ribbon{display:grid;grid-template-columns:repeat(var(--n),minmax(94px,1fr));min-width:calc(var(--n)*94px);background:var(--sheet);border:1px solid var(--line);border-radius:4px}
 .stage{padding:7px 12px 9px;border-top:5px solid var(--ochre);border-bottom:1px solid var(--line);font-family:var(--kai);font-weight:700;line-height:1.4;background:var(--ochre-soft)}
-.stage.wet{border-top-color:var(--rain);background:var(--rain-soft)}
+.stage.rain{border-top-color:var(--rain);background:var(--rain-soft)}.stage.cold{border-top-color:var(--cold);background:var(--cold-soft)}
 .stage small{display:block;font:400 12px/1.5 var(--sans);color:var(--ink2)}
 .stage small.say{font-size:13px;margin-top:2px}
 .zone small{display:block;font-size:12px;line-height:1.45;color:var(--muted);font-weight:400;max-width:17em;white-space:normal}
@@ -144,13 +144,13 @@ details.nums dt{font-weight:600;color:var(--ink);white-space:nowrap}details.nums
 #fmsg{font-size:14px;color:var(--ink2)}#hits{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}
 .stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));background:var(--sheet);border:1px solid var(--line);border-radius:4px;margin:10px 0}
 .stg{padding:14px 18px 16px;border-top:5px solid var(--ochre)}
-.stg.wet{border-top-color:var(--rain)}
+.stg.rain{border-top-color:var(--rain)}.stg.cold{border-top-color:var(--cold)}
 .stg .when{font-size:13px;color:var(--ink2);margin:0}
 .stg h3{margin:2px 0 8px;font-size:20px}
 .stg p{margin:6px 0;font-size:15px}
 .stg .why{font-size:13px;color:var(--ink2)}
 .reason{margin:14px 0 22px;padding-left:16px;border-left:5px solid var(--ochre)}
-.reason.wet{border-left-color:var(--rain)}
+.reason.rain{border-left-color:var(--rain)}.reason.cold{border-left-color:var(--cold)}
 .reason h3{margin-top:0}
 .reason dl{margin:6px 0;display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;font-size:15px;max-width:60em}
 .reason dt{font-weight:600;white-space:nowrap}.reason dd{margin:0}
@@ -499,7 +499,7 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
         # --o 是手機版(每天一列)的排列順序:時段標題排在它的第一天前面
         order = index.get(stage.days[0], 1) * 10 - 5
         parts.append(
-            f'<div class="stage s{stage.index}{"" if stage.stable else " wet"}" style="grid-column:span {len(stage.days)};--o:{order}">'
+            f'<div class="stage s{stage.index} {stage.tone}" style="grid-column:span {len(stage.days)};--o:{order}">'
             f"<small>時段{ORDINALS[stage.index - 1]}</small>{esc(stage.headline)}"
             f'<small class="say">{esc(plain.system_words(stage.headline))}</small></div>'
         )
@@ -522,7 +522,7 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
     parts.append("</div></div>")
     parts.append(
         '<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。'
-        "綠色的時段有天氣系統帶來降雨;時段名稱下方的小字是白話說明。</p>"
+        "時段的顏色:綠色是降雨系統、藍色是冷空氣、黃褐色是天氣穩定;時段名稱下方的小字是白話說明。</p>"
     )
     return "".join(parts)
 
@@ -622,7 +622,7 @@ def _period_grid(rows) -> str:
 
 def _summary_view(forecast, brief, comparison) -> str:
     blocks = "".join(
-        f'<div class="stg{"" if s.stable else " wet"}"><p class="when">時段{ORDINALS[s.index - 1]} {esc(s.span)}</p><h3>{esc(s.headline)}</h3>'
+        f'<div class="stg {s.tone}"><p class="when">時段{ORDINALS[s.index - 1]} {esc(s.span)}</p><h3>{esc(s.headline)}</h3>'
         f"<p>{esc(s.weather)},高溫 {esc(briefing._range(s.tmax, '°C'))}、低溫 {esc(briefing._range(s.tmin, '°C'))},"
         f"降雨機率 {esc(briefing._range([p * 100 for p in s.pop], '%'))}。</p>"
         f'<p>{_meter(s.confidence_label)}</p><p class="why">{esc(";".join(s.reasons))}</p></div>'
@@ -675,7 +675,7 @@ def _synoptic_view(forecast, brief, upper_days, signal_list, southern: bool) -> 
         for s in brief.stages:
             items = "".join(f"<dt>{esc(level)}</dt><dd>{esc(text)}</dd>" for level, text in s.rationale)
             parts.append(
-                f'<div class="reason{"" if s.stable else " wet"}"><h3>時段{ORDINALS[s.index - 1]} {esc(s.span)} {esc(s.headline)}</h3>'
+                f'<div class="reason {s.tone}"><h3>時段{ORDINALS[s.index - 1]} {esc(s.span)} {esc(s.headline)}</h3>'
                 f"<dl>{items}<dt>垂直結構檢查</dt><dd>{esc(s.coupling)}</dd></dl></div>"
             )
         parts += [

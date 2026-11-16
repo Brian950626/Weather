@@ -229,15 +229,17 @@ class BriefingTest(unittest.TestCase):
         self.assertEqual(
             [(r.kind, r.system) for r in self.brief.roles],
             [("ridge", "副熱帶高壓籠罩"), ("ridge", "副熱帶高壓籠罩"), ("trough", "高空槽接近"), ("front", "鋒面通過"),
-             ("cold", "東北季風影響"), ("warm", "偏南風回暖"), ("front", "鋒面通過、東北季風增強")],
+             ("cold", "東北季風影響"), ("warm", "東北季風減弱、回暖"), ("front", "鋒面通過、東北季風增強")],
         )
 
     def test_week_is_split_into_at_most_three_stages(self):
         stages = self.brief.stages
-        self.assertEqual([len(s.days) for s in stages], [2, 3, 2])
+        # 鋒面帶著東北季風到達的 11/18 自成一段,不和前一天的回暖併在一起
+        self.assertEqual([len(s.days) for s in stages], [2, 4, 1])
         self.assertEqual([s.stable for s in stages], [True, False, False])
-        self.assertEqual(stages[1].headline, "高空槽接近 → 鋒面通過 → 東北季風影響")
-        self.assertEqual(stages[2].headline, "偏南風回暖 → 鋒面通過、東北季風增強")  # 太短的兩段併在一起
+        self.assertEqual([s.tone for s in stages], ["fair", "rain", "rain"])
+        self.assertEqual(stages[1].headline, "高空槽接近 → 鋒面通過 → 東北季風減弱、回暖")
+        self.assertEqual(stages[2].headline, "鋒面通過、東北季風增強")
         self.assertEqual(stages[0].confidence_label, "高")
         self.assertIn("11/14(六)", stages[1].reasons[0])  # 理由取該時段最沒把握的一天
         self.assertEqual([level for level, _ in stages[1].rationale], ["500 hPa", "850 / 925 hPa", "250 hPa", "水氣與不穩定"])
@@ -247,9 +249,71 @@ class BriefingTest(unittest.TestCase):
 
     def test_lede_says_when_it_changes_and_what_to_watch(self):
         self.assertIn("分成 3 段", self.brief.lede)
-        self.assertIn("11/14(六)、11/17(二) 轉變", self.brief.lede)
+        self.assertIn("11/14(六)、11/18(三) 轉變", self.brief.lede)
         self.assertIn("11/18(三) 的降溫", self.brief.lede)
         self.assertIn("最沒把握的是 11/14(六)", self.brief.lede)
+
+    def synthetic(self, tmax, mslp, t850, pop=None, z500=None):
+        """用存檔的日子當底,換掉高溫、降雨機率與氣壓場,做出想要的一週(沒有高空資料)。"""
+        days = []
+        for i, fc in enumerate(self.forecast[: len(tmax)]):
+            spread = lambda v: analysis.Spread(v - 1, v, v + 1, v - 0.5, v + 0.5)
+            days.append(analysis.DayForecast(**{**fc.__dict__, "tmax": spread(tmax[i]), "tmin": spread(tmax[i] - 7),
+                                                "pop": (pop or [0.1] * len(tmax))[i]}))
+        patterns = [analysis.DayPattern(fc.day, mslp[i], t850[i], (z500 or [5880.0] * len(tmax))[i]) for i, fc in enumerate(days)]
+        return days, patterns
+
+    def test_dry_cold_air_in_the_lee_is_still_a_cold_surge(self):
+        # 台中這類背風面:東北季風來了,不下雨也沒有明顯的風向轉變,但高溫一天降 5 度、氣壓上升
+        days, patterns = self.synthetic(tmax=[28, 28, 23, 20, 23, 25, 25], mslp=[1017, 1019, 1021, 1022.5, 1023, 1022, 1022],
+                                        t850=[16, 16, 14.2, 11.9, 12, 13.5, 13.5])
+        roles = briefing.day_roles(days, [], None, 24.15, 120.67, patterns)
+        self.assertEqual([r.system for r in roles[2:5]], ["東北季風增強", "東北季風影響", "東北季風減弱、回暖"])
+        stages = briefing.stages(days, roles, patterns=patterns)
+        self.assertEqual(stages[1].days[0], days[2].day)  # 冷空氣到達那天是新時段的開始
+        self.assertEqual(stages[1].tone, "cold")
+        self.assertTrue(stages[1].stable)  # 沒有會下雨的日子
+        # 同樣的變化在東亞以外,叫冷空氣南下,不叫東北季風
+        elsewhere = briefing.day_roles(days, [], None, 40.0, -100.0, patterns)
+        self.assertEqual([r.system for r in elsewhere[2:4]], ["冷空氣南下", "鋒後冷空氣影響"])
+
+    def test_rain_with_rising_pressure_before_a_surge_is_a_front_approaching(self):
+        days, patterns = self.synthetic(tmax=[27, 27, 25, 19, 17, 19, 22], mslp=[1016, 1017.4, 1020.8, 1024.6, 1025.9, 1026, 1024],
+                                        t850=[14, 14.6, 13.6, 8.6, 5.4, 7, 10.4], pop=[0.9, 0.3, 0.8, 0.9, 0.5, 0.25, 0.25])
+        roles = briefing.day_roles(days, [], None, 25.04, 121.56, patterns)
+        self.assertEqual([r.system for r in roles[2:4]], ["鋒面接近", "東北季風增強"])
+        dry = [analysis.DayForecast(**{**fc.__dict__, "pop": 0.2}) for fc in days]
+        self.assertNotEqual(briefing.day_roles(dry, [], None, 25.04, 121.56, patterns)[2].system, "鋒面接近")  # 沒下雨就不是
+
+    def test_warming_is_named_by_the_wind(self):
+        self.assertTrue(briefing._from_south(180, 25))
+        self.assertTrue(briefing._from_south(225, 25))
+        self.assertFalse(briefing._from_south(90, 25))  # 東風回暖不能叫偏南風回暖
+        self.assertFalse(briefing._from_south(None, 25))
+        self.assertTrue(briefing._from_south(0, -30))  # 南半球的暖風從北邊來
+
+    def test_split_week_groups_similar_days(self):
+        block = lambda value, n: [[value, value] for _ in range(n)]
+        self.assertEqual(briefing.split_week(block(0, 2) + block(3, 3) + block(-2, 2)), [[0, 1], [2, 3, 4], [5, 6]])
+        self.assertEqual(briefing.split_week(block(0, 7)), [list(range(7))])  # 天氣都一樣就不切
+        self.assertEqual(briefing.split_week(block(0, 6) + block(0.5, 1)), [list(range(7))])  # 差一點點不值得切
+        self.assertEqual(len(briefing.split_week(block(0, 1) + block(4, 1) + block(-4, 1) + block(4, 1) + block(-4, 1))), 3)
+        self.assertEqual(briefing.split_week([]), [])
+
+    def test_stage_titles_keep_the_story_short(self):
+        self.assertEqual(briefing.stage_headline(["東北季風增強", "東北季風影響", "東北季風影響"]), "東北季風增強")
+        self.assertEqual(briefing.stage_headline(["高壓脊建立", "副熱帶高壓籠罩", "天氣穩定"]), "副熱帶高壓籠罩")
+        self.assertEqual(briefing.stage_headline(["副熱帶高壓籠罩", "沒有明顯天氣系統,局部短暫雨", "天氣穩定"]), "副熱帶高壓籠罩")
+        self.assertEqual(briefing.stage_headline(["天氣穩定"]), "天氣穩定")
+        self.assertEqual(briefing.stage_headline(["高空槽接近", "水氣偏多、有雨", "鋒面接近"]), "高空槽接近 → 鋒面接近")
+        self.assertEqual(briefing.stage_headline(["高空槽接近", "回暖", "鋒面通過", "東北季風影響", "東北季風減弱、回暖"]),
+                         "高空槽接近 → 鋒面通過 → 東北季風減弱、回暖")  # 超過三個:留頭尾與中間最重要的
+
+    def test_stage_colour_is_rain_then_cold_then_fair(self):
+        self.assertEqual(briefing.stage_tone(["cold", "cold"], [0.9, 0.5]), "rain")
+        self.assertEqual(briefing.stage_tone(["cold", "cold", "warm"], [0.1, 0.4, 0.2]), "cold")
+        self.assertEqual(briefing.stage_tone(["ridge", "ridge"], [0.0, 0.1]), "fair")
+        self.assertEqual(briefing.stage_tone(["trough", "ridge", "ridge"], [0.45, 0.1, 0.1]), "rain")
 
     def test_southern_hemisphere_and_other_regions_do_not_get_a_monsoon(self):
         ens = load_surface()
