@@ -159,6 +159,27 @@ details.how summary{cursor:pointer;color:var(--ink)}
 .verdict-ok{color:var(--rain);font-weight:600}.verdict-miss{color:var(--warm);font-weight:600}.verdict-fa{color:var(--ochre);font-weight:600}
 svg{display:block;min-width:620px;width:100%}
 svg.sprite{position:absolute;min-width:0;width:0;height:0}
+/* 動態效果:只在讀者沒有關閉動態效果時才播 */
+.rcol i{transform-origin:bottom}.grid td.cell i{transform-origin:left}
+@media (prefers-reduced-motion:no-preference){
+.js .page.on,.js .view.on{animation:fadein .35s ease-out}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.ico.live .rays{transform-box:fill-box;transform-origin:center;animation:spin 16s linear infinite}
+.ico.live .cloud{animation:bob 4.5s ease-in-out infinite alternate}
+.ico.live .cloud+.cloud{animation-duration:6s;animation-delay:-2s}
+.ico.live .rain line{animation:fall 1.1s linear infinite}
+.ico.live .rain line:nth-child(2){animation-delay:-.4s}.ico.live .rain line:nth-child(3){animation-delay:-.75s}
+.ico.live .rain line:nth-child(4){animation-delay:-.2s}.ico.live .rain line:nth-child(5){animation-delay:-.6s}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes bob{from{transform:translateX(-1.2px)}to{transform:translateX(1.2px)}}
+@keyframes fall{0%{transform:translateY(-4px);opacity:0}25%{opacity:1}80%{opacity:1}100%{transform:translateY(5px);opacity:0}}
+}
+@media (hover:hover){
+.d,.stg,.pd,.week,.zone tbody tr,.grid td.cell{transition:background-color .2s,box-shadow .25s}
+.d:hover,.grid td.cell:hover,.zone tbody tr:hover{background:color-mix(in srgb,var(--rain-soft) 40%,transparent)}
+.stg:hover,.week:hover{box-shadow:0 6px 18px -10px color-mix(in srgb,var(--ink) 45%,transparent)}
+.tabs button,#places button,.nav a{transition:color .2s,border-color .25s,background-color .2s}
+}
 /* 天氣景象橫幅 */
 .hero{position:relative;height:190px;border-radius:6px;overflow:hidden;margin:8px 0 18px;border:1px solid var(--line);
 --sky1:#8fc3ee;--sky2:#dff0fb;--hill1:#9fc6ae;--hill2:#5f9a7b;--hcloud:#ffffff;--hdark:#c9d3d8;--cap:#12202b}
@@ -322,7 +343,7 @@ async function compute(s){delete s.dataset.pending;const w=s.querySelector('.wai
  try{w.textContent='正在載入分析程式,第一次約需 10–20 秒。';const p=await engine();
   w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析。';
   const html=await p.globals.get('forecast')(s.dataset.name,+s.dataset.lat,+s.dataset.lon);
-  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint();markDays();if(window.heroPaint)heroPaint()}
+  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint();markDays();if(window.heroPaint)heroPaint();if(window.fxRun)fxRun()}
  catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+explain(e)+'請再點一次這個地點重試。'}}
 // 把程式或瀏覽器的英文錯誤訊息換成看得懂的中文
 function explain(e){const t=String(e&&e.message||e);try{console.warn('weekcast:',t)}catch(x){}
@@ -401,11 +422,11 @@ _RAYS = "".join(
 )
 # 顏色直接寫在圖形的 style 上、用 CSS 變數:<use> 複製出來的圖形吃不到外部樣式表裡
 # 帶祖先條件的選擇器,但行內樣式會跟著複製,變數則依使用處解析,深淺色模式都正確。
-_SUN = f'<g style="fill:var(--sun);stroke:var(--sun);stroke-width:3;stroke-linecap:round"><circle cx="24" cy="24" r="8"/>{_RAYS}</g>'
+_SUN = f'<g style="fill:var(--sun);stroke:var(--sun);stroke-width:3;stroke-linecap:round"><circle cx="24" cy="24" r="8"/><g class="rays">{_RAYS}</g></g>'
 
 
 def _drops(xs: list[float], length: float = 7, top: float = 33) -> str:
-    return '<g style="stroke:var(--rain);stroke-width:3.2;stroke-linecap:round">' + "".join(
+    return '<g class="rain" style="stroke:var(--rain);stroke-width:3.2;stroke-linecap:round">' + "".join(
         f'<line x1="{x}" y1="{top}" x2="{x - length * 0.35:.1f}" y2="{top + length}"/>' for x in xs
     ) + "</g>"
 
@@ -414,7 +435,8 @@ _CLOUD_STYLE = {"cl": "fill:var(--cloud)", "cl2": "fill:var(--cloud);opacity:.55
 
 
 def _cloud(kind: str, scale: float = 1.0, dx: float = 0, dy: float = 0) -> str:
-    return f'<path style="{_CLOUD_STYLE[kind]}" d="{_CLOUD}" transform="translate({dx} {dy}) scale({scale})"/>'
+    # 外層的 <g> 留給動畫用:CSS 的 transform 會蓋掉 SVG 的 transform 屬性,所以不能直接動 path
+    return f'<g class="cloud"><path style="{_CLOUD_STYLE[kind]}" d="{_CLOUD}" transform="translate({dx} {dy}) scale({scale})"/></g>'
 
 
 _SMALL_SUN = f'<g transform="translate(-1.5 -2.5) scale(0.7)">{_SUN}</g>'
@@ -796,21 +818,23 @@ def _week_box(week: dict | None, link: str = "") -> str:
     )
 
 
-def _hero(forecast) -> str:
-    """地點頁最上方的天氣景象:太陽、雲、雨的動畫橫幅。
+def _hero(days: list[dict], name: str = "") -> str:
+    """天氣景象橫幅:太陽、雲、雨的動畫畫面。days 是 report.to_json 裡的逐日資料。
 
     這裡只放每天的資料,畫面由瀏覽器端的 HERO_JS 依「讀者的今天」畫出來;動畫用開源的
     Anime.js(MIT 授權),載入失敗或讀者關閉動態效果時,仍會顯示靜止的畫面。
     """
-    days = [
+    p50 = lambda v, default: round(v["p50"]) if isinstance(v, dict) else default
+    rows = [
         {
-            "day": f.day, "sky": f.sky, "hi": round(f.tmax.p50), "lo": round(f.tmin.p50), "pop": round(f.pop * 100),
-            "wind": round(f.wind.p50) if f.wind else 0, "cloud": round(f.cloud.p50) if f.cloud else 50,
+            "day": d["day"], "sky": d["sky"], "hi": p50(d["tmax"], 0), "lo": p50(d["tmin"], 0), "pop": round(d["pop"] * 100),
+            "wind": p50(d.get("wind"), 0), "cloud": p50(d.get("cloud"), 50),
         }
-        for f in forecast
+        for d in days
     ]
-    data = esc(json.dumps(days, ensure_ascii=False, separators=(",", ":")))
-    return f'<div class="hero" data-days="{data}"></div>'
+    data = esc(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
+    label = f' data-name="{esc(name)}"' if name else ""
+    return f'<div class="hero" data-days="{data}"{label}></div>'
 
 
 def _numbers_help() -> str:
@@ -961,7 +985,7 @@ def build_place(
     total = sum(ens.member_count(s) for s in ens.systems)
     week = plain.week_summary(forecast, upper_days)
     block = (
-        _hero(forecast)
+        _hero([asdict(f) for f in forecast])
         + _week_box(asdict(week) if week else None, '<p class="sub">每天的原因和準備建議在下方「白話總結」分頁;想看專業的分析依據,請看其他分頁。</p>')
         + _ribbon(forecast, brief)
         + _numbers_help()
@@ -1123,7 +1147,8 @@ function draw(box){let days;try{days=JSON.parse(box.dataset.days)}catch(e){retur
  g+='<path class="hill far" d="M0 240V186c120-34 210-8 330-30s200-52 320-28 190 44 300 20 160-40 250-22v94z"/>';
  g+='<path class="hill" d="M0 240V208c150-26 260 6 400-12s240-30 380-10 250 26 420 4v50z"/></svg>';
  const word=d.day===today?'今天':d.day>today?'接下來':'最近一筆';
- g+='<div class="cap"><span class="when">'+word+' '+(+d.day.slice(5,7))+'/'+(+d.day.slice(8,10))+'</span><b>'+d.sky+'</b>'
+ const who=box.dataset.name?box.dataset.name+' · ':'';
+ g+='<div class="cap"><span class="when">'+who+word+' '+(+d.day.slice(5,7))+'/'+(+d.day.slice(8,10))+'</span><b>'+d.sky+'</b>'
   +'<span class="t">'+d.hi+'° <i>/ '+d.lo+'°</i></span><span class="p">降雨機率 '+d.pop+'%</span></div>';
  box.className='hero '+tone;box.innerHTML=g;box.dataset.wind=d.wind}
 function move(box){if(calm||!window.anime)return;
@@ -1138,9 +1163,47 @@ function move(box){if(calm||!window.anime)return;
 // 只讓目前看得到的那個地點動,切換地點時重畫
 window.heroPaint=function(){live.forEach(a=>a.pause());live=[];
  document.querySelectorAll('.hero').forEach(draw);
- const on=document.querySelector('.page.on article.place.on .hero');if(on)move(on)};
+ const on=document.querySelector('.page.on article.place.on .hero')||document.querySelector('.page.on[data-page=overview] .hero');if(on)move(on)};
 window.addEventListener('hashchange',()=>setTimeout(heroPaint,0));
 heroPaint();
+})();
+"""
+
+# 全站的動態效果:都用已經載入的 Anime.js 與 CSS,不另外載入函式庫。
+# 只對畫面上看得到、而且還沒播過的元素播一次進場動畫;讀者關閉動態效果時全部略過。
+FX_JS = """
+(function(){
+const calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+function root(){const pg=document.querySelector('.page.on');if(!pg)return null;
+ return pg.dataset.page==='place'?pg.querySelector('article.place.on'):pg}
+function fresh(box,sel){return [...box.querySelectorAll(sel)].filter(el=>{
+ if(el.dataset.fx||!el.getClientRects().length)return false;el.dataset.fx='1';return true})}
+// 時間軸上的圖示換成內嵌的圖形,太陽才轉得動、雨才落得下來(<use> 引用的圖形無法個別做動畫)
+function liveIcons(box){box.querySelectorAll('.ribbon .wx svg.ico').forEach(svg=>{
+ if(svg.dataset.live)return;const u=svg.querySelector('use');if(!u)return;
+ const sym=document.getElementById((u.getAttribute('href')||'').slice(1));if(!sym)return;
+ svg.innerHTML=sym.innerHTML;svg.dataset.live='1';svg.classList.add('live')})}
+// 淡入到元素原本的透明度(例如「已過」的日子本來就是半透明),播完把行內樣式拿掉,交還給 CSS
+const settle=els=>()=>els.forEach(e=>{e.style.opacity='';e.style.transform=''});
+const base=el=>getComputedStyle(el).opacity;
+function play(targets,props){if(targets.length)anime(Object.assign({targets,easing:'easeOutCubic'},props))}
+window.fxRun=function(){const box=root();if(!box)return;liveIcons(box);
+ if(calm||!window.anime)return;
+ const days=fresh(box,'.ribbon .d');
+ play(days,{opacity:[0,base],translateY:[16,0],delay:anime.stagger(60),duration:560,complete:settle(days)});
+ play(fresh(box,'.tcol i'),{scaleY:[0,1],delay:anime.stagger(60,{start:150}),duration:750,easing:'easeOutBack'});
+ play(fresh(box,'.rcol i'),{scaleY:[0,1],delay:anime.stagger(60,{start:260}),duration:700,easing:'easeOutQuart'});
+ play(fresh(box,'.grid td.cell i'),{scaleX:[0,1],delay:anime.stagger(12),duration:600});
+ const cards=fresh(box,'.week, .stg, .pd, .reason, .wkd, .stages, .sheet');
+ play(cards,{opacity:[0,base],translateY:[12,0],delay:anime.stagger(70),duration:520,complete:settle(cards)});
+ const rows=fresh(box,'table.zone tbody tr, .view.on table:not(.grid) tbody tr');
+ play(rows,{opacity:[0,base],translateX:[-10,0],delay:anime.stagger(35),duration:420,complete:settle(rows)});
+ // 橫幅上的高溫由低溫往上數,像電視氣象的數字跳動
+ box.querySelectorAll('.hero .cap .t').forEach(t=>{if(t.dataset.fx)return;t.dataset.fx='1';
+  const m=t.textContent.match(/(-?\\d+)°\\s*\\/\\s*(-?\\d+)°/);if(!m)return;const hi=+m[1],lo=+m[2],o={v:lo};
+  anime({targets:o,v:hi,round:1,duration:900,easing:'easeOutQuad',update:()=>{t.firstChild.textContent=o.v+'° '}})})};
+window.addEventListener('hashchange',()=>setTimeout(fxRun,0));
+fxRun();
 })();
 """
 
@@ -1243,7 +1306,7 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
     else:
         hazards = '<p class="sub">各地這一週都沒有大雨、強風或明顯降溫的訊號。</p>'
     return (
-        f"<h1>這一週的天氣</h1>{boxes}"
+        f"<h1>這一週的天氣</h1>{_hero(payloads[names[0]]['days'], names[0])}{boxes}"
         f'<h2>天氣系統怎麼演變</h2><p class="lede">{esc(lede)}</p>'
         f"<h2>逐日分區預報</h2>{table}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
@@ -1296,7 +1359,7 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str], pa
         '</main><div id="tip"></div>'
         + (f'<script src="{leaflet}.js"></script>' if radar else "")
         + f'<script src="{ANIME_URL}"></script>'
-        + f"<script>{script}{RADAR_JS if radar else ''}{HERO_JS}</script></body></html>"
+        + f"<script>{script}{RADAR_JS if radar else ''}{HERO_JS}{FX_JS}</script></body></html>"
     )
 
 
