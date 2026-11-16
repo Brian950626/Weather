@@ -85,7 +85,7 @@ def day_roles(
         monsoon = _monsoon(latitude, longitude, row.dir925 if row else None)
         warming = previous is not None and fc.tmax.p50 - previous.tmax.p50 >= 2
         if "deep_low" in seen:
-            role = ("low", "低壓或熱帶系統接近")
+            role = ("low", "低壓或熱帶系統接近" if abs(latitude) < 35 else "低壓接近")  # 高緯度沒有熱帶系統
         elif row is not None and row.shift is not None:
             strong = row.shift.cooling is not None and row.shift.cooling >= 3
             surge = "東北季風增強" if _monsoon(latitude, longitude, row.shift.to_dir) else "冷空氣南下" if latitude >= 0 else "冷空氣北上"

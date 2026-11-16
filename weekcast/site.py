@@ -27,7 +27,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import analysis, briefing, client, history, periods, report, upper, verify
+from . import analysis, briefing, client, history, periods, plain, report, upper, verify
+from .cities import CITIES
+from .towns import TOWNS
 
 DEFAULT_PLACES = ("枋寮", "台北", "台中", "高雄", "花蓮")
 KEEP_RUNS = 40  # data.json 裡每個地點保留幾次執行的摘要(每 6 小時一次,約 10 天,校驗要用)
@@ -41,17 +43,18 @@ TABS = (
     ("models", "模式與系集"),
     ("risk", "不確定性"),
     ("verify", "校驗"),
+    ("plain", "白話總結"),
 )
 FONTS = "https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&display=swap"
 
 # 配色取自手繪天氣圖的習慣:降雨區塗綠、暖色用紅、冷色用藍、槽線用褐色。
 CSS = """
 :root{--paper:#f1f4f1;--sheet:#fcfdfb;--ink:#17201c;--ink2:#44524b;--muted:#69766e;--line:#d3dbd5;
---rain:#2c7a57;--rain-soft:#d2e7da;--warm:#bf4226;--warm-soft:#f3d8ce;--cold:#2a5ca6;--cold-soft:#d5e0f1;--ochre:#8a5f12;--ochre-soft:#f0e4c6;
+--sun:#e39a0c;--cloud:#a9b6af;--cloud-dark:#6d7a73;--rain:#2c7a57;--rain-soft:#d2e7da;--warm:#bf4226;--warm-soft:#f3d8ce;--cold:#2a5ca6;--cold-soft:#d5e0f1;--ochre:#8a5f12;--ochre-soft:#f0e4c6;
 --kai:"LXGW WenKai TC","BiauKai","DFKai-SB","Kaiti TC",KaiTi,serif;
 --sans:system-ui,-apple-system,"PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif}
 @media (prefers-color-scheme:dark){:root{--paper:#121815;--sheet:#1a221e;--ink:#e8eee9;--ink2:#b9c5bd;--muted:#93a198;--line:#2f3a34;
---rain:#5dbf93;--rain-soft:#1f4a37;--warm:#f08462;--warm-soft:#5a2a1d;--cold:#7fa8ea;--cold-soft:#22375c;--ochre:#d8ae55;--ochre-soft:#4a3a16}}
+--sun:#f3c04a;--cloud:#a3b1a9;--cloud-dark:#70807a;--rain:#5dbf93;--rain-soft:#1f4a37;--warm:#f08462;--warm-soft:#5a2a1d;--cold:#7fa8ea;--cold-soft:#22375c;--ochre:#d8ae55;--ochre-soft:#4a3a16}}
 *{box-sizing:border-box}
 html{scroll-padding-top:60px}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.7 var(--sans);font-variant-numeric:tabular-nums}
@@ -76,6 +79,13 @@ ul{margin:8px 0;padding-left:22px;max-width:46em}li{margin:5px 0}
 main{max-width:1120px;margin:0 auto;padding:30px 20px 72px}
 .js .page:not(.on),.js article.place:not(.on),.js .view:not(.on){display:none}
 .sheet{background:var(--sheet);border:1px solid var(--line);border-radius:4px;padding:16px 18px;margin:10px 0}
+.week{background:var(--sheet);border:1px solid var(--line);border-left:6px solid var(--rain);border-radius:4px;padding:14px 20px 12px;margin:6px 0 22px;max-width:52em}
+.week .wk{font-size:13px;color:var(--muted);margin:0;letter-spacing:.08em}
+.week .wh{font-family:var(--kai);font-weight:700;font-size:24px;line-height:1.45;margin:2px 0 8px}
+.week ul{margin:6px 0 10px}
+.wkd{margin:8px 0}.wkd>summary{cursor:pointer;font-weight:600;padding:6px 0}.wkd[open]>summary{color:var(--muted);font-weight:400}
+.wkd .week{margin:4px 0 10px}
+.pd{border-top:1px solid var(--line);padding:10px 0}.pd:first-child{border-top:0}.pd h3{margin:0 0 4px}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.55}
 th,td{padding:9px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
@@ -93,6 +103,17 @@ caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;pad
 .stage{padding:7px 12px 9px;border-top:5px solid var(--ochre);border-bottom:1px solid var(--line);font-family:var(--kai);font-weight:700;line-height:1.4;background:var(--ochre-soft)}
 .stage.wet{border-top-color:var(--rain);background:var(--rain-soft)}
 .stage small{display:block;font:400 12px/1.5 var(--sans);color:var(--ink2)}
+.stage small.say{font-size:13px;margin-top:2px}
+.zone small{display:block;font-size:12px;line-height:1.45;color:var(--muted);font-weight:400;max-width:17em;white-space:normal}
+.swipe{display:none;font-size:13px;color:var(--muted);margin:4px 0}
+.rel{display:inline-block;font:600 12px/1.5 var(--sans);font-style:normal;color:var(--sheet);background:var(--ink);border-radius:3px;padding:0 5px;margin-left:6px;vertical-align:middle}
+.past{opacity:.5}.past .rel{background:var(--muted)}
+#fresh.stale{color:var(--warm);font-weight:600}
+#renew{font:inherit;font-weight:600;margin-left:8px;padding:2px 10px;border:1px solid var(--warm);border-radius:4px;background:var(--sheet);color:var(--warm);cursor:pointer}
+.renewed{color:var(--rain)}
+details.nums dl{margin:6px 0;display:grid;grid-template-columns:max-content 1fr;gap:4px 14px}
+details.nums dt{font-weight:600;color:var(--ink);white-space:nowrap}details.nums dd{margin:0}
+.legend .lg{display:inline-block;width:92px;height:10px;border-radius:2px;margin-right:8px;vertical-align:middle;background:linear-gradient(90deg,#a9e3ff,#1877d2 45%,#f2d53c 72%,#e03a2c)}
 .stage:not(.s1),.d:not(.d1){border-left:1px solid var(--line)}
 .d{padding:10px 6px 12px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center}
 .d b{font-size:15px}.d b span{color:var(--muted);font-weight:400;margin-left:4px}
@@ -107,6 +128,7 @@ caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;pad
 .conf i{width:6px;height:11px;background:var(--line)}
 .conf.c1 i:nth-child(-n+1),.conf.c2 i:nth-child(-n+2),.conf.c3 i:nth-child(-n+3),.conf.c4 i:nth-child(-n+4),.conf.c5 i{background:var(--ink)}
 .conf em{font-style:normal;margin-left:5px}
+.d .conf{flex-wrap:wrap;justify-content:center;row-gap:3px;white-space:normal}.d .conf em{flex-basis:100%;margin-left:0}
 .key{font-size:13px;color:var(--ink2);margin:6px 0 0}
 .tabs{position:sticky;top:0;z-index:5;background:var(--paper);display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid var(--ink);margin:22px 0 0}
 .tabs button{font:inherit;background:none;border:0;border-bottom:4px solid transparent;padding:12px 14px 8px;color:var(--ink2);cursor:pointer;white-space:nowrap}
@@ -136,6 +158,38 @@ details.how{font-size:14px;color:var(--ink2);margin:8px 0;max-width:46em}
 details.how summary{cursor:pointer;color:var(--ink)}
 .verdict-ok{color:var(--rain);font-weight:600}.verdict-miss{color:var(--warm);font-weight:600}.verdict-fa{color:var(--ochre);font-weight:600}
 svg{display:block;min-width:620px;width:100%}
+svg.sprite{position:absolute;min-width:0;width:0;height:0}
+/* 天氣景象橫幅 */
+.hero{position:relative;height:190px;border-radius:6px;overflow:hidden;margin:8px 0 18px;border:1px solid var(--line);
+--sky1:#8fc3ee;--sky2:#dff0fb;--hill1:#9fc6ae;--hill2:#5f9a7b;--hcloud:#ffffff;--hdark:#c9d3d8;--cap:#12202b}
+.hero.mild{--sky1:#a9c6dd;--sky2:#e6eef3;--hcloud:#f6f9fa}
+.hero.grey{--sky1:#9fb0ba;--sky2:#d8dfe2;--hill1:#93ab9d;--hill2:#5a8370;--hcloud:#e9eef0;--hdark:#aab6bc}
+.hero.wet{--sky1:#73858f;--sky2:#b9c5c9;--hill1:#7f978a;--hill2:#476f5d;--hcloud:#d3dbde;--hdark:#8d9aa1;--cap:#0e1a22}
+@media (prefers-color-scheme:dark){.hero{--sky1:#17354f;--sky2:#2c5878;--hill1:#2f5544;--hill2:#1c3a2d;--hcloud:#8fa3b1;--hdark:#5c6f7b;--cap:#f1f6f8}
+.hero.mild{--sky1:#1d3445;--sky2:#35536a}.hero.grey{--sky1:#232f37;--sky2:#3b4a54;--hcloud:#7f8f99;--hdark:#55646d}
+.hero.wet{--sky1:#1a242a;--sky2:#2f3d45;--hcloud:#6c7b84;--hdark:#48565e;--cap:#f1f6f8}}
+.hero svg{position:absolute;inset:0;width:100%;height:100%;min-width:0}
+.hero .sky{fill:url(#none);fill:var(--sky2)}
+.hero{background:linear-gradient(var(--sky1),var(--sky2))}.hero .sky{fill:transparent}
+.hero .disc{fill:var(--sun)}.hero .glow{fill:var(--sun);opacity:.28}.hero .rays line{stroke:var(--sun);stroke-width:5;stroke-linecap:round}
+.hero .cl{fill:var(--hcloud);opacity:.92}.hero .cl.dk{fill:var(--hdark)}
+.hero .drop{stroke:var(--rain);stroke-width:2.6;stroke-linecap:round;opacity:.85}
+.hero .hill{fill:var(--hill2)}.hero .hill.far{fill:var(--hill1)}
+.hero .cap{position:absolute;left:20px;bottom:16px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;color:var(--cap);
+text-shadow:0 1px 6px color-mix(in srgb,var(--sky2) 70%,transparent)}
+.hero .cap .when{font-size:14px;font-weight:600;flex-basis:100%}
+.hero .cap b{font-family:var(--kai);font-size:34px;line-height:1.1}
+.hero .cap .t{font-size:26px;font-weight:700}.hero .cap .t i{font-style:normal;font-weight:400;font-size:18px}
+.hero .cap .p{font-size:15px;font-weight:600}
+svg.ico{display:inline-block;min-width:0;width:1.7em;height:1.7em;vertical-align:-.5em;margin-right:.25em;flex:none;overflow:visible}
+.d .wx .ico{display:block;width:44px;height:44px;margin:0 auto 2px}
+.zone .wx .ico{width:30px;height:30px;vertical-align:-9px}
+.grid td.cell .ico{width:24px;height:24px;vertical-align:-7px}
+.pd h3 .ico{width:30px;height:30px;vertical-align:-8px}
+.icons{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px 18px;max-width:60em;margin:10px 0}
+.icons div{display:grid;grid-template-columns:44px 1fr;column-gap:10px;align-items:center}
+.icons .ico{grid-row:span 2;width:44px;height:44px;margin:0}.icons span{font-size:13px;color:var(--ink2)}
+#map svg{display:inline;min-width:0;width:auto}
 svg text{font:12px var(--sans);fill:var(--muted)}
 svg .val{fill:var(--ink2)}svg .gridline{stroke:var(--line)}
 svg .hi{fill:var(--warm-soft);stroke:var(--warm)}svg .lo{fill:var(--cold-soft);stroke:var(--cold)}svg .rn{fill:var(--rain-soft);stroke:var(--rain)}
@@ -158,6 +212,20 @@ h1{font-size:28px}.lede{font-size:19px}h2{font-size:21px}
 .nav a{flex:1;text-align:center;padding:9px 4px 11px;border-bottom:0;border-top:4px solid transparent;margin-top:-2px;font-size:15px}
 .nav a[aria-current=page]{border-top-color:var(--rain)}
 .reason dl{grid-template-columns:1fr}.reason dt{margin-top:6px}
+details.nums dl{grid-template-columns:1fr}details.nums dt{margin-top:6px}
+/* 手機:分頁列換行,不再往右捲到看不見;時間軸改成每天一列 */
+.tabs{position:static;flex-wrap:wrap;overflow:visible}.tabs button{padding:9px 10px 5px;font-size:15px}
+.ribbon{grid-template-columns:1fr;min-width:0}
+.stage{grid-column:auto!important;order:var(--o);border-left:0!important}
+.d{order:var(--o);display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"date wx temp" "pop pop conf";align-items:center;gap:2px 12px;text-align:left;padding:9px 12px;border-left:0!important;border-bottom:1px solid var(--line)}
+.d b{grid-area:date}.d .wx{grid-area:wx;min-height:0;font-weight:600;white-space:nowrap}
+.d .wx .ico{display:inline-block;width:30px;height:30px;margin:0 6px 0 0;vertical-align:-9px}.d .pop{grid-area:pop}
+.tcol{grid-area:temp;height:auto;flex-direction:row;gap:3px;font-size:15px}.tcol s,.tcol i,.rcol{display:none}
+.tcol span:last-of-type::before{content:"/ ";color:var(--muted)}
+.d .conf{grid-area:conf;flex-wrap:nowrap;justify-self:end}.d .conf em{flex-basis:auto;margin-left:5px}
+.swipe{display:block}.zone th:nth-child(2),.zone td:nth-child(2),.wide{display:none}
+.week .wh{font-size:21px}
+.hero{height:160px}.hero .cap{left:14px;bottom:12px}.hero .cap b{font-size:28px}.hero .cap .t{font-size:22px}
 }
 @media (min-width:761px){.stg+.stg{border-left:1px solid var(--line)}}
 """
@@ -198,9 +266,33 @@ tip.style.left=Math.min(e.clientX+14,innerWidth-tip.offsetWidth-8)+'px';tip.styl
 
 // ---- 自動更新:定時檢查有沒有新的預報,有就重新載入,不必手動重新整理 ----
 const fresh=document.getElementById('fresh'),built=fresh.dataset.generated;
-const local=t=>new Date(t).toLocaleString([], {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
-function stampText(extra){fresh.textContent='更新於 '+local(built)+(extra||'')}
+const local=t=>new Date(t).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
+// 寫出資料是多久以前的;排程偶爾會延後或跳過,超過 9 小時就提醒內容可能過時
+function stampText(extra){const h=(Date.now()-new Date(built))/36e5,old=h>=9;
+ const ago=h<1?'不到 1 小時前':'約 '+Math.round(h)+' 小時前';
+ fresh.classList.toggle('stale',old);
+ fresh.textContent=(old?'資料已 '+Math.round(h)+' 小時沒有更新,內容可能過時。':'')+'更新於 '+local(built)+'('+ago+')'+(extra||'');
+ if(old){const b=document.createElement('button');b.type='button';b.id='renew';b.textContent='立即重算';b.addEventListener('click',renew);fresh.appendChild(b)}}
 stampText();
+// 排程沒跑、資料太舊時,讀者可以自己用最新資料重算目前的地點(和搜尋欄用同一套做法,在瀏覽器裡算)
+async function renew(){const s=secs()[cur];if(!s||s.dataset.pending)return;
+ const keep=s.innerHTML;go('place',cur,tab);
+ s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1><p class="wait"></p>';s.dataset.pending='1';
+ await compute(s);
+ if(s.dataset.pending){const why=(s.querySelector('.wait')||{}).textContent||'';delete s.dataset.pending;s.innerHTML=keep;paint();markDays();
+  stampText(';重算沒有成功:'+why)}
+ else{const note=document.createElement('p');note.className='sub renewed';
+  note.textContent='這個地點剛在你的瀏覽器裡用最新資料重算('+local(Date.now())+')。其他地點仍是上面寫的更新時間;預報趨勢與校驗要等網站下次自動更新。';
+  s.querySelector('h1').after(note)}}
+// 依讀者裝置的日期標出今天、明天,已經過去的日子變淡
+function markDays(){const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+ const now=new Date(),today=iso(now),next=iso(new Date(now.getFullYear(),now.getMonth(),now.getDate()+1));
+ document.querySelectorAll('[data-day]').forEach(el=>{const d=el.dataset.day,word=d===today?'今天':d===next?'明天':d<today?'已過':'';
+  el.classList.toggle('past',d<today);el.classList.toggle('today',d===today);
+  const at=el.matches('[data-rel]')?el:el.querySelector('[data-rel]');if(!at)return;
+  let tag=at.querySelector('.rel');if(!word){if(tag)tag.remove();return}
+  if(!tag){tag=document.createElement('em');tag.className='rel';at.appendChild(tag)}tag.textContent=word})}
+markDays();setInterval(markDays,6e5);
 async function refresh(){try{const d=await(await fetch('data.json?t='+Date.now(),{cache:'no-store'})).json();
  if(d.generated&&d.generated!==built&&new Date(d.generated)>new Date(built)){location.replace(location.pathname+'?v='+Date.parse(d.generated)+location.hash);return}
  stampText(',上次檢查 '+local(Date.now()))}catch(e){stampText(',剛才檢查失敗,稍後再試')}}
@@ -230,25 +322,61 @@ async function compute(s){delete s.dataset.pending;const w=s.querySelector('.wai
  try{w.textContent='正在載入分析程式,第一次約需 10–20 秒。';const p=await engine();
   w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析。';
   const html=await p.globals.get('forecast')(s.dataset.name,+s.dataset.lat,+s.dataset.lon);
-  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint()}
- catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+String(e.message||e).split('\\n').pop()+'。等一分鐘後再點一次這個地點重試。'}}
+  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint();markDays();if(window.heroPaint)heroPaint()}
+ catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+explain(e)+'請再點一次這個地點重試。'}}
+// 把程式或瀏覽器的英文錯誤訊息換成看得懂的中文
+function explain(e){const t=String(e&&e.message||e);try{console.warn('weekcast:',t)}catch(x){}
+ if(/minutely|hourly/i.test(t)&&/limit/i.test(t))return '氣象資料來源暫時忙線(短時間內查詢太多次),等一分鐘。';
+ if(/daily/i.test(t)&&/limit/i.test(t))return '今天向氣象資料來源查詢的次數已達上限,明天才能再查。';
+ if(/failed to fetch|networkerror|load failed|network/i.test(t))return '連不上網路或資料來源,請確認網路連線。';
+ if(/pyodide|import|module|wasm/i.test(t))return '分析程式沒有載入成功,可能是網路較慢。';
+ if(/沒有可用|格式|回應/.test(t))return '這個地點沒有可用的預報資料。';
+ return '發生預期外的狀況。'}
 function open(name,lat,lon){hits.innerHTML='';msg.textContent='';box.value='';
  const list=saved();if(!list.some(p=>p.name===name&&p.lat==lat)){list.push({name,lat,lon});keep(list)}
  go('place',addTab(name,lat,lon),TABS[0])}
+// 先查內建的臺灣鄉鎮市區清單(不連網、一定是中文);查不到才問外部的地名服務
+const TOWNS=__TOWNS__,CITIES=__CITIES__,norm=t=>t.trim().replace(/臺/g,'台').replace(/\\s+/g,'');
+function localHits(text){const q=norm(text);if(!q)return [];const out=[];
+ for(const [county,town,lat,lon] of TOWNS){const base=town.slice(0,-1),c=county.slice(0,-1);
+  const forms=[town,base,county+town,county+base,c+town,c+base];
+  const rank=forms.includes(q)?0:(town.startsWith(q)||(county+town).startsWith(q))?1:(county+town).includes(q)?2:-1;
+  if(rank>=0)out.push({rank,name:county+town,where:'',lat,lon})}
+ // 世界主要城市:中文名或英文名都可以
+ const low=text.trim().toLowerCase();
+ for(const [zh,en,country,lat,lon] of CITIES){const name=zh.replace(/臺/g,'台'),e=en.toLowerCase(),bare=name.split('(')[0];
+  const rank=(q===name||q===bare||low===e)?0:(name.startsWith(q)||e.startsWith(low))?1:(q.length>=2&&(name.includes(q)||e.includes(low)||q===country))?2:-1;
+  if(rank>=0)out.push({rank,name:bare,where:country,lat,lon})}
+ return out.sort((a,b)=>a.rank-b.rank).slice(0,8)}
+function offer(list,note){hits.innerHTML='';msg.textContent=note;
+ list.forEach(o=>{const b=document.createElement('button');b.type='button';
+  b.textContent=o.name+(o.where?'('+o.where+')':'');b.addEventListener('click',()=>open(o.name,+(+o.lat).toFixed(4),+(+o.lon).toFixed(4)));hits.appendChild(b)})}
+// 邊打邊列出符合的鄉鎮;注音或倉頡還在選字時先不動
+box.addEventListener('input',e=>{if(e.isComposing)return;const found=localHits(box.value);
+ if(found.length)offer(found,'請選擇:');else{hits.innerHTML='';msg.textContent=''}});
+box.addEventListener('compositionend',()=>{const found=localHits(box.value);if(found.length)offer(found,'請選擇:')});
 form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.trim();hits.innerHTML='';if(!q)return;
  const m=q.match(/^(-?\\d+(?:\\.\\d+)?)\\s*[,,\\s]\\s*(-?\\d+(?:\\.\\d+)?)$/);
  if(m&&Math.abs(+m[1])<=90&&Math.abs(+m[2])<=180){open((+m[1]).toFixed(2)+', '+(+m[2]).toFixed(2),+m[1],+m[2]);return}
+ const found=localHits(q);
+ if(found.length===1){open(found[0].name,found[0].lat,found[0].lon);return}
+ if(found.length){offer(found,'請選擇:');return}
  msg.textContent='搜尋中';
- try{const d=await(await fetch('https://photon.komoot.io/api/?limit=8&lat=23.7&lon=121&q='+encodeURIComponent(q))).json();
+ // 清單裡沒有的地名:先問氣象資料來源自己的地名服務(較穩定,有中文名就用中文),問不到再問 Photon
+ try{const g=await(await fetch('https://geocoding-api.open-meteo.com/v1/search?count=8&language=zh&name='+encodeURIComponent(q))).json();
+  const found=(g.results||[]).map(r=>({name:r.name,where:[r.admin1,r.country].filter((v,i,a)=>v&&v!==r.name&&a.indexOf(v)===i).join('、'),lat:r.latitude,lon:r.longitude}));
+  if(found.length){offer(found.slice(0,6),'請選擇:');return}}catch(err){}
+ try{const url='https://photon.komoot.io/api/?limit=8&lat=23.7&lon=121&q='+encodeURIComponent(q);
+  // lang=default 讓地名用當地的文字,不跟著瀏覽器的語言變成英文;服務不接受這個參數時退回原本的查法
+  let r=await fetch(url+'&lang=default');if(!r.ok)r=await fetch(url);
+  if(!r.ok)throw new Error(r.status);const d=await r.json();
   const seen=new Set(),out=[];
   for(const f of d.features||[]){const p=f.properties,[lon,lat]=f.geometry.coordinates;
    const where=[p.city,p.county,p.state,p.country].filter((v,i,a)=>v&&v!==p.name&&a.indexOf(v)===i).join('、');
    const key=lat.toFixed(1)+','+lon.toFixed(1);if(seen.has(key))continue;seen.add(key);out.push({name:p.name||q,where,lat,lon})}
-  if(!out.length){msg.textContent='找不到「'+q+'」。可以改輸入座標,例如 22.37,120.59';return}
-  msg.textContent='請選擇:';
-  out.slice(0,6).forEach(o=>{const b=document.createElement('button');b.type='button';
-   b.textContent=o.name+(o.where?'('+o.where+')':'');b.addEventListener('click',()=>open(o.name,+o.lat.toFixed(4),+o.lon.toFixed(4)));hits.appendChild(b)})}
- catch(err){msg.textContent='地名搜尋服務暫時無法使用。可以改輸入座標,例如 22.37,120.59'}});
+  if(!out.length){msg.textContent='找不到「'+q+'」。臺灣的地點請輸入鄉鎮市區的名稱(例如 東港、恆春鎮、屏東縣枋山鄉),或輸入座標,例如 22.37,120.59';return}
+  offer(out.slice(0,6),'請選擇:')}
+ catch(err){msg.textContent='找不到「'+q+'」。臺灣請輸入鄉鎮市區(例如 東港、恆春鎮);國外請輸入城市的中文或英文名(例如 東京、Paris),或直接輸入座標,例如 35.68,139.69'}});
 saved().forEach(p=>addTab(p.name,p.lat,p.lon));
 route();
 """
@@ -259,6 +387,72 @@ esc = html.escape
 # --------------------------------------------------------------------------- #
 # 小零件
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# 天氣圖示
+# --------------------------------------------------------------------------- #
+
+# 像電視氣象的圖示:太陽、雲、雨滴。每種天氣用語對應一個圖示,文字仍然保留在旁邊,
+# 所以圖示只是輔助(讀屏軟體會略過)。雨滴用綠色,和全站「綠色代表降雨」一致。
+_CLOUD = "M13 34a8 8 0 0 1-.6-16A11 11 0 0 1 33.5 15 9.5 9.5 0 0 1 35 34z"
+_RAYS = "".join(
+    f'<line x1="24" y1="5" x2="24" y2="9.5" transform="rotate({angle} 24 24)"/>' for angle in range(0, 360, 45)
+)
+# 顏色直接寫在圖形的 style 上、用 CSS 變數:<use> 複製出來的圖形吃不到外部樣式表裡
+# 帶祖先條件的選擇器,但行內樣式會跟著複製,變數則依使用處解析,深淺色模式都正確。
+_SUN = f'<g style="fill:var(--sun);stroke:var(--sun);stroke-width:3;stroke-linecap:round"><circle cx="24" cy="24" r="8"/>{_RAYS}</g>'
+
+
+def _drops(xs: list[float], length: float = 7, top: float = 33) -> str:
+    return '<g style="stroke:var(--rain);stroke-width:3.2;stroke-linecap:round">' + "".join(
+        f'<line x1="{x}" y1="{top}" x2="{x - length * 0.35:.1f}" y2="{top + length}"/>' for x in xs
+    ) + "</g>"
+
+
+_CLOUD_STYLE = {"cl": "fill:var(--cloud)", "cl2": "fill:var(--cloud);opacity:.55", "dk": "fill:var(--cloud-dark)"}
+
+
+def _cloud(kind: str, scale: float = 1.0, dx: float = 0, dy: float = 0) -> str:
+    return f'<path style="{_CLOUD_STYLE[kind]}" d="{_CLOUD}" transform="translate({dx} {dy}) scale({scale})"/>'
+
+
+_SMALL_SUN = f'<g transform="translate(-1.5 -2.5) scale(0.7)">{_SUN}</g>'
+ICON_SHAPES = {
+    "sun": _SUN,
+    "sun-cloud": _SMALL_SUN + _cloud("cl", 0.8, 9, 10),
+    "cloud": _cloud("cl2", 0.7, 16, -2) + _cloud("cl", 0.9, 0, 6),
+    "overcast": _cloud("cl", 0.7, 16, -2) + _cloud("dk", 0.9, 0, 6),
+    "sun-shower": _SMALL_SUN + _cloud("cl", 0.8, 9, 4) + _drops([24, 33], 6, 35),
+    "cloud-shower": _cloud("cl", 0.95, 1, -5) + _drops([19, 30], 6),
+    "rain-maybe": _cloud("dk", 0.95, 1, -5) + _drops([19, 30], 7),
+    "rain": _cloud("dk", 0.95, 1, -5) + _drops([15, 24, 33], 8),
+    "heavy-rain": _cloud("dk", 0.95, 1, -5) + _drops([12, 19, 26, 33, 40], 10),
+}
+# 天氣用語(analysis.describe_sky 的輸出)→ 圖示
+ICON_FOR = {
+    "晴": "sun",
+    "晴時多雲": "sun-cloud",
+    "多雲": "cloud",
+    "陰": "overcast",
+    "晴偶陣雨": "sun-shower",
+    "多雲偶雨": "cloud-shower",
+    "可能有雨": "rain-maybe",
+    "有雨": "rain",
+    "明顯降雨": "heavy-rain",
+    "大雨": "heavy-rain",
+}
+ICON_SPRITE = (
+    '<svg class="sprite" aria-hidden="true" width="0" height="0"><defs>'
+    + "".join(f'<symbol id="i-{name}" viewBox="0 0 48 48">{shape}</symbol>' for name, shape in ICON_SHAPES.items())
+    + "</defs></svg>"
+)
+
+
+def _icon(sky: str) -> str:
+    """天氣用語對應的圖示;沒有對應的用語就不畫。"""
+    name = ICON_FOR.get(sky)
+    return f'<svg class="ico" aria-hidden="true" viewBox="0 0 48 48"><use href="#i-{name}"/></svg>' if name else ""
 
 
 def _table(rows: list[list[str]], cls: str = "", caption: str = "", head_col: bool = True) -> str:
@@ -300,10 +494,14 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
     low = min(f.tmin.p50 for f in forecast)
     high = max(f.tmax.p50 for f in forecast)
     parts = [f'<div class="ribwrap"><div class="ribbon" style="--n:{len(forecast)}">']
+    index = {f.day: i for i, f in enumerate(forecast, 1)}
     for stage in brief.stages:
+        # --o 是手機版(每天一列)的排列順序:時段標題排在它的第一天前面
+        order = index.get(stage.days[0], 1) * 10 - 5
         parts.append(
-            f'<div class="stage s{stage.index}{"" if stage.stable else " wet"}" style="grid-column:span {len(stage.days)}">'
-            f"<small>時段{ORDINALS[stage.index - 1]}</small>{esc(stage.headline)}</div>"
+            f'<div class="stage s{stage.index}{"" if stage.stable else " wet"}" style="grid-column:span {len(stage.days)};--o:{order}">'
+            f"<small>時段{ORDINALS[stage.index - 1]}</small>{esc(stage.headline)}"
+            f'<small class="say">{esc(plain.system_words(stage.headline))}</small></div>'
         )
     for i, f in enumerate(forecast, 1):
         d = datetime.fromisoformat(f.day)
@@ -313,15 +511,19 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
             f"降雨機率 {f.pop:.0%},雨量中位數 {f.precip.p50:.0f} mm、偏多時 {f.precip.p90:.0f} mm"
         )
         parts.append(
-            f'<div class="d d{i}" data-tip="{esc(tip)}"><b>{d.month}/{d.day}<span>{"一二三四五六日"[d.weekday()]}</span></b>'
-            f'<span class="wx">{esc(f.sky)}</span>'
+            f'<div class="d d{i}" style="--o:{i * 10}" data-day="{f.day}" data-tip="{esc(tip)}">'
+            f'<b data-rel>{d.month}/{d.day}<span>{"一二三四五六日"[d.weekday()]}</span></b>'
+            f'<span class="wx">{_icon(f.sky)}{esc(f.sky)}</span>'
             f'<div class="tcol"><s style="flex:{high - f.tmax.p50:.2f}"></s><span>{f.tmax.p50:.0f}°</span>'
             f'<i style="flex:{max(f.tmax.p50 - f.tmin.p50, 0.1):.2f}"></i><span>{f.tmin.p50:.0f}°</span><s style="flex:{f.tmin.p50 - low:.2f}"></s></div>'
             f'<div class="rcol"><i style="height:{f.pop * 100:.0f}%"></i></div><span class="pop">降雨 {f.pop:.0%}</span>'
             f"{_meter(f.confidence_label)}</div>"
         )
     parts.append("</div></div>")
-    parts.append('<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。綠色的時段有天氣系統帶來降雨。</p>')
+    parts.append(
+        '<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。'
+        "綠色的時段有天氣系統帶來降雨;時段名稱下方的小字是白話說明。</p>"
+    )
     return "".join(parts)
 
 
@@ -406,7 +608,7 @@ def _period_grid(rows) -> str:
                 f"降雨機率 {c.pop:.0%}\n雨量中位數 {c.precip.p50:.1f} mm,偏多時 {c.precip.p90:.1f} mm"
             )
             tds.append(
-                f'<td class="cell" data-tip="{esc(tip)}"><b>{c.temp.p50:.0f}°</b><span>{esc(c.sky)} {c.pop:.0%}</span>'
+                f'<td class="cell" data-tip="{esc(tip)}">{_icon(c.sky)}<b>{c.temp.p50:.0f}°</b><span>{esc(c.sky)} {c.pop:.0%}</span>'
                 f'<i style="width:{c.pop * 100:.0f}%"></i></td>'
             )
         body.append("<tr>" + "".join(tds) + "</tr>")
@@ -558,6 +760,65 @@ def _risk_view(forecast, brief) -> str:
     return "".join(parts)
 
 
+def _plain_view(forecast, upper_days, period_list, southern: bool) -> str:
+    """給不熟悉氣象的讀者:每天的天氣、原因與準備,不使用術語。"""
+    sky = {f.day: f.sky for f in forecast}
+    cards = "".join(
+        f'<div class="pd" data-day="{d.day}"><h3 data-rel>{_icon(sky.get(d.day, ""))}{esc(plain._label(d.day))}</h3><p>{esc(d.weather)}</p>'
+        + (f"<p><b>為什麼:</b>{esc(d.why)}</p>" if d.why else "")
+        + (f'<p><b>怎麼準備:</b>{esc("、".join(d.advice))}。</p>' if d.advice else "")
+        + (f'<p class="sub">{esc(d.caution)}</p>' if d.caution else "")
+        + "</div>"
+        for d in plain.plain_days(forecast, upper_days, period_list, southern)
+    )
+    parts = [
+        "<h2>這一週的天氣、原因與影響</h2>",
+        '<p class="sub">把前面各分頁的高空分析翻成日常用語:每天天氣怎樣、為什麼、該怎麼準備。</p>',
+        f"<p>{esc(plain.overview(forecast, upper_days))}</p>",
+        f'<div class="sheet">{cards}</div>',
+    ]
+    if upper_days:
+        parts.append("<h2>其他分頁裡的名詞是什麼意思</h2>" + _table([["名詞", "白話解釋"], *([t, m] for t, m in plain.GLOSSARY)]))
+    return "".join(parts)
+
+
+def _week_box(week: dict | None, link: str = "") -> str:
+    """最醒目的那一塊:用白話講未來一週會怎樣。week 是 data.json 裡 plain.week 的內容。"""
+    if not week:
+        return ""
+    story = "".join(f"<li>{esc(s)}</li>" for s in week["story"])
+    return (
+        f'<div class="week"><p class="wk">未來一週天氣總結</p><p class="wh">{esc(week["headline"])}</p><ul>{story}</ul>'
+        + (f"<p>{esc(week['cause'])}</p>" if week.get("cause") else "")
+        + (f"<p><b>要注意:</b>{esc(';'.join(week['watch']))}。</p>" if week.get("watch") else "")
+        + link
+        + "</div>"
+    )
+
+
+def _hero(forecast) -> str:
+    """地點頁最上方的天氣景象:太陽、雲、雨的動畫橫幅。
+
+    這裡只放每天的資料,畫面由瀏覽器端的 HERO_JS 依「讀者的今天」畫出來;動畫用開源的
+    Anime.js(MIT 授權),載入失敗或讀者關閉動態效果時,仍會顯示靜止的畫面。
+    """
+    days = [
+        {
+            "day": f.day, "sky": f.sky, "hi": round(f.tmax.p50), "lo": round(f.tmin.p50), "pop": round(f.pop * 100),
+            "wind": round(f.wind.p50) if f.wind else 0, "cloud": round(f.cloud.p50) if f.cloud else 50,
+        }
+        for f in forecast
+    ]
+    data = esc(json.dumps(days, ensure_ascii=False, separators=(",", ":")))
+    return f'<div class="hero" data-days="{data}"></div>'
+
+
+def _numbers_help() -> str:
+    """時間軸下方的「這些數字怎麼看」:降雨機率、雨量、括號、信心度、風速。"""
+    rows = "".join(f"<dt>{esc(term)}</dt><dd>{esc(text)}</dd>" for term, text in plain.HOW_TO_READ)
+    return f'<details class="how nums"><summary>這些數字怎麼看</summary><dl>{rows}</dl></details>'
+
+
 def _verify_view(result: verify.Verification | None, stored: bool) -> str:
     head = "<h2>過去幾天報得準不準</h2>"
     if result is None:
@@ -608,6 +869,19 @@ def _verify_view(result: verify.Verification | None, stored: bool) -> str:
 # --------------------------------------------------------------------------- #
 # 地點
 # --------------------------------------------------------------------------- #
+
+def previous_age_hours(path: Path | None, now: datetime) -> float | None:
+    """上一次發布的 data.json 是幾小時前產生的;讀不到就回傳 None。"""
+    if path is None:
+        return None
+    try:
+        at = datetime.fromisoformat(json.loads(Path(path).read_text(encoding="utf-8"))["generated"])
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return (now - at).total_seconds() / 3600
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
 
 def load_previous(path: Path | None) -> dict[str, list[dict]]:
     """讀取上一次發布的 data.json,回傳 {地名: 先前各次執行的摘要}。讀不到就當作沒有。
@@ -673,19 +947,26 @@ def build_place(
             checked = None
 
     views = {
-        "summary": _summary_view(forecast, brief, comparison),
+        "summary": (
+            '<p class="sub">以下依「主導的天氣系統」把一週分段,用語比較專業;同樣的內容用白話寫在頁面最上方和「白話總結」分頁。</p>'
+            f'<p class="lede">{esc(brief.lede)}</p>' + _summary_view(forecast, brief, comparison)
+        ),
         "daily": _daily_view(forecast, brief, period_list),
         "synoptic": _synoptic_view(forecast, brief, upper_days, signal_list, lat < 0),
         "models": _models_view(forecast, brief, ens, comparison),
         "risk": _risk_view(forecast, brief),
         "verify": _verify_view(checked, previous_runs is not None),
+        "plain": _plain_view(forecast, upper_days, period_list, lat < 0),
     }
     total = sum(ens.member_count(s) for s in ens.systems)
+    week = plain.week_summary(forecast, upper_days)
     block = (
-        f'<p class="sub">{abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"},{total} 個系集成員,'
-        f"{_day(forecast[0].day)} 到 {_day(forecast[-1].day)}</p>"
-        f'<p class="lede">{esc(brief.lede)}</p>'
+        _hero(forecast)
+        + _week_box(asdict(week) if week else None, '<p class="sub">每天的原因和準備建議在下方「白話總結」分頁;想看專業的分析依據,請看其他分頁。</p>')
         + _ribbon(forecast, brief)
+        + _numbers_help()
+        + f'<p class="sub">預報取自最接近的模式格點({abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"},'
+        f"格點間距約 25 公里,所以相鄰鄉鎮的結果會很接近),綜合 {total} 個系集成員(同一批模式算了 {total} 次)的結果。</p>"
         + '<div class="tabs" role="tablist">'
         + "".join(f'<button role="tab" data-tab="{key}">{title}</button>' for key, title in TABS)
         + "</div>"
@@ -703,7 +984,7 @@ def build_place(
 # --------------------------------------------------------------------------- #
 
 SEARCH_HTML = """<form id="find" role="search"><input id="q" type="search" autocomplete="off"
-placeholder="查其他地點:恆春、Tokyo 或 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
+placeholder="查其他地點:東港、恆春鎮、東京、New York 或座標 22.37,120.59" aria-label="搜尋地點"><button>查詢</button>
 <span id="fmsg"></span><div id="hits"></div></form>"""
 
 RADAR_HTML = """<section class="page" data-page="radar" id="radar"><h1>即時雷達回波</h1>
@@ -711,7 +992,8 @@ RADAR_HTML = """<section class="page" data-page="radar" id="radar"><h1>即時雷
 <div class="bar"><button data-src="rv" aria-pressed="true">全球合成</button><button data-src="jma">日本氣象廳</button>
 <button data-src="cwa">中央氣象署</button><button id="rplay">暫停</button><span id="rtime"></span></div>
 <div id="map"></div><img id="cwa" alt="中央氣象署雷達合成回波圖">
-<p class="sub" id="rnote">最近約 2 小時的回波動畫,每 5 分鐘自動更新。雷達只能看出現在雨在哪裡、往哪裡移動;更久之後請看預報。地圖中心是「地點預報」裡目前選的地點。</p>
+<p class="sub legend"><span class="lg" aria-hidden="true"></span>顏色由淺藍、深藍到黃、紅,代表雨由小到大;沒有顏色的地方目前沒有下雨。白色圓點是「地點預報」裡目前選的地點。</p>
+<p class="sub" id="rnote">最近約 2 小時的回波動畫,每 5 分鐘自動更新。雷達只能看出現在雨在哪裡、往哪裡移動;更久之後請看預報。</p>
 <p class="sub">來源:全球合成為 <a href="https://www.rainviewer.com/">RainViewer</a>(彙整各國氣象單位的雷達);
 <a href="https://www.jma.go.jp/bosai/nowc/">日本氣象廳</a>降水即時預報(涵蓋日本周邊,台灣只到東北部外海);
 <a href="https://www.cwa.gov.tw/V8/C/W/OBS_Radar.html">中央氣象署</a>雷達合成回波圖。底圖 © OpenStreetMap。</p></section>"""
@@ -744,8 +1026,9 @@ ABOUT_HTML = (
     '<p class="lede">這個網站把課堂上做一週天氣預報報告的流程,交給程式每 6 小時做一次。</p>'
     "<h2>怎麼閱讀</h2><ul>"
     "<li><b>總覽</b>先講結論:這一週分成哪幾段、各由什麼天氣系統主導,以及所有地點的逐日預報表。</li>"
-    "<li><b>地點預報</b>最上面是一週的時間軸,下面有六個分頁,順序和預報報告的章節相同:"
-    "摘要、逐日與時段、綜觀分析、模式與系集、不確定性、校驗。</li>"
+    "<li><b>地點預報</b>最上面先用白話講未來一週的天氣,接著是一週的時間軸,下面有七個分頁。前六個的順序和預報報告的章節相同:"
+    "摘要、逐日與時段、綜觀分析、模式與系集、不確定性、校驗;最後一個「白話總結」把每天的原因和準備建議用日常用語再講一次,"
+    "不熟悉氣象的讀者可以只看最上方的總結和這個分頁。</li>"
     "<li><b>即時雷達</b>回答「接下來幾小時會不會下雨」,這件事雷達比預報準。</li>"
     "<li>有顏色的地方都有固定的意思:綠色是降雨,紅色是高溫與暖空氣,藍色是低溫與冷空氣。這是手繪天氣圖的習慣。</li></ul>"
     "<h2>分析流程</h2><ul>"
@@ -766,6 +1049,24 @@ ABOUT_HTML = (
             ["雷達回波", "RainViewer、日本氣象廳、中央氣象署", "只在瀏覽器裡即時顯示,不進入預報計算"],
         ]
     )
+    + "<h2>天氣圖示</h2>"
+    '<p class="sub">圖示依當天的降雨機率與雲量決定,旁邊一定有文字。雨滴越多,雨越明顯。</p>'
+    '<div class="icons">'
+    + "".join(
+        f"<div>{_icon(sky)}<b>{sky}</b><span>{note}</span></div>"
+        for sky, note in (
+            ("晴", "雲很少,不會下雨"),
+            ("晴時多雲", "有些雲,不會下雨"),
+            ("多雲", "雲多,不會下雨"),
+            ("陰", "整天都是雲,不會下雨"),
+            ("晴偶陣雨", "降雨機率 20–40%,雲不多"),
+            ("多雲偶雨", "降雨機率 20–40%,雲多"),
+            ("可能有雨", "降雨機率 40–70%"),
+            ("有雨", "降雨機率 70% 以上"),
+            ("明顯降雨", "會下雨,而且雨量 10 毫米以上;大雨也用這個圖示"),
+        )
+    )
+    + "</div>"
     + "<h2>名詞解釋</h2>"
     + _table([["名詞", "簡單解釋", "在本站哪裡看到"], *([a, b, c] for a, b, c in GLOSSARY)])
     + '<section id="notes"><h2>注意事項</h2><ul>'
@@ -775,7 +1076,9 @@ ABOUT_HTML = (
     "<li><b>降雨機率高不代表雨大。</b>請一起看雨量,以及綜觀分析裡是否寫著淺層降雨。</li>"
     "<li><b>解析度約 25 公里。</b>相鄰鄉鎮的結果會很接近;落山風、山區午後雷陣雨、海陸風這類局部現象,模式解析不出來。</li>"
     "<li><b>氣溫沒有用測站觀測校正。</b>山區與海邊的誤差會比平地大。</li>"
-    "<li><b>預設地點每 6 小時更新一次</b>(約臺灣時間 03、09、15、21 時之後),有時會延後幾十分鐘。開著的頁面每 10 分鐘檢查一次,有新預報會自動重新載入。</li>"
+    "<li><b>預設地點大約每 6 小時更新一次。</b>更新由 GitHub 的排程觸發,排程有時會延後甚至跳過,所以網站每小時檢查一次,"
+    "資料超過 3 小時就重算(實際上 GitHub 每 4 到 7 小時才觸發一次)。資料太舊時,右上角會出現「立即重算」,按下去會在你的瀏覽器裡用最新資料重算目前的地點,不必等排程。頁面右上角會寫資料是幾小時前的;超過 9 小時沒更新會出現提醒。開著的頁面每 10 分鐘檢查一次,有新預報會自動重新載入。</li>"
+    "<li><b>「今天、明天」是依你裝置的日期標的。</b>已經過去的日子會變淡。</li>"
     "<li><b>用搜尋欄查的地點不會自動更新</b>,每次點開才重新計算,第一次約需 10–20 秒,也沒有預報趨勢與校驗。</li>"
     "</ul></section>"
     "<h2>相關連結</h2><ul>"
@@ -788,6 +1091,59 @@ ABOUT_HTML = (
     "</ul></section>"
 )
 
+ANIME_URL = "https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"
+
+# 天氣景象橫幅。依當天的天氣用語決定畫什麼:有沒有太陽、雲多不多、雨下多大;風越大,雲飄得越快、雨越斜。
+HERO_JS = """
+(function(){
+const SCENE={'晴':[1,0,0],'晴時多雲':[1,1,0],'多雲':[0,2,0],'陰':[0,3,0],'晴偶陣雨':[1,1,1],'多雲偶雨':[0,2,1],
+ '可能有雨':[0,3,2],'有雨':[0,3,3],'明顯降雨':[0,3,4],'大雨':[0,3,5]};
+const CLOUD='M13 34a8 8 0 0 1-.6-16A11 11 0 0 1 33.5 15 9.5 9.5 0 0 1 35 34z';
+const calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+let live=[];
+function iso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function draw(box){let days;try{days=JSON.parse(box.dataset.days)}catch(e){return}
+ if(!days.length)return;const today=iso(new Date());
+ const d=days.find(x=>x.day===today)||days.find(x=>x.day>today)||days[0];
+ const [sun,cloud,rain]=SCENE[d.sky]||[0,2,0];
+ const tone=rain>=2?'wet':cloud>=3?'grey':cloud>=2?'mild':'clear';
+ let g='<svg viewBox="0 0 1200 240" preserveAspectRatio="xMidYMid slice" aria-hidden="true">';
+ g+='<rect class="sky" width="1200" height="240"/>';
+ if(sun){g+='<g class="sun" transform="translate(830 72)"><circle class="glow" r="70"/><g class="rays">';
+  for(let i=0;i<12;i++)g+='<line x1="0" y1="-44" x2="0" y2="-58" transform="rotate('+i*30+')"/>';
+  g+='</g><circle class="disc" r="34"/></g>'}
+ const n=[0,3,5,7][cloud];
+ for(let i=0;i<n;i++){const sc=2.2+((i*37)%5)*0.55,x=(i*211+90)%1150,y=18+((i*53)%4)*22;
+  g+='<g class="drift" data-i="'+i+'"><path class="cl'+(cloud>=3&&i%2?' dk':'')+'" d="'+CLOUD+'" transform="translate('+x+' '+y+') scale('+sc.toFixed(2)+')"/></g>'}
+ const slant=Math.min(60,d.wind*1.6),drops=[0,14,26,40,56,72][rain];
+ if(drops){g+='<g class="rain">';
+  for(let i=0;i<drops;i++){const x=(i*163+40)%1260-30,y=((i*71)%200)-20,len=16+rain*4;
+   g+='<line class="drop" x1="'+x+'" y1="'+y+'" x2="'+(x-slant*len/60).toFixed(1)+'" y2="'+(y+len)+'"/>'}
+  g+='</g>'}
+ g+='<path class="hill far" d="M0 240V186c120-34 210-8 330-30s200-52 320-28 190 44 300 20 160-40 250-22v94z"/>';
+ g+='<path class="hill" d="M0 240V208c150-26 260 6 400-12s240-30 380-10 250 26 420 4v50z"/></svg>';
+ const word=d.day===today?'今天':d.day>today?'接下來':'最近一筆';
+ g+='<div class="cap"><span class="when">'+word+' '+(+d.day.slice(5,7))+'/'+(+d.day.slice(8,10))+'</span><b>'+d.sky+'</b>'
+  +'<span class="t">'+d.hi+'° <i>/ '+d.lo+'°</i></span><span class="p">降雨機率 '+d.pop+'%</span></div>';
+ box.className='hero '+tone;box.innerHTML=g;box.dataset.wind=d.wind}
+function move(box){if(calm||!window.anime)return;
+ const wind=+box.dataset.wind||0,speed=Math.max(0.5,Math.min(3,wind/14));
+ box.querySelectorAll('.drift').forEach((el,i)=>{live.push(anime({targets:el,translateX:[-60-i*12,80+i*18],duration:(26000+i*5200)/speed,
+  direction:'alternate',easing:'easeInOutSine',loop:true}))});
+ const rays=box.querySelector('.rays');if(rays)live.push(anime({targets:rays,rotate:360,duration:90000,easing:'linear',loop:true}));
+ const glow=box.querySelector('.glow');if(glow)live.push(anime({targets:glow,scale:[1,1.12],opacity:[0.22,0.36],duration:4200,direction:'alternate',easing:'easeInOutSine',loop:true}));
+ const drops=box.querySelectorAll('.drop');
+ drops.forEach((el,i)=>{const a=anime({targets:el,translateY:[-70,270],duration:760+(i*53)%420,easing:'linear',loop:true});
+  a.seek(((i*197)%1000)/1000*a.duration);live.push(a)})}
+// 只讓目前看得到的那個地點動,切換地點時重畫
+window.heroPaint=function(){live.forEach(a=>a.pause());live=[];
+ document.querySelectorAll('.hero').forEach(draw);
+ const on=document.querySelector('.page.on article.place.on .hero');if(on)move(on)};
+window.addEventListener('hashchange',()=>setTimeout(heroPaint,0));
+heroPaint();
+})();
+"""
+
 RADAR_JS = """
 (function(){
 const el=document.getElementById('map'),img=document.getElementById('cwa'),label=document.getElementById('rtime'),
@@ -798,8 +1154,12 @@ const here=()=>{const s=document.querySelector('article.place.on')||document.que
 const map=L.map(el,{scrollWheelZoom:false}).setView(here(),7);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:10,attribution:'&copy; OpenStreetMap'}).addTo(map);
 const pin=L.circleMarker(here(),{radius:6,weight:2,color:'#0b0b0b',fillColor:'#fff',fillOpacity:1}).addTo(map);
-window.radarMove=()=>{map.setView(here(),map.getZoom());pin.setLatLng(here())};
-window.radarShow=()=>{map.invalidateSize();radarMove()};
+// 地圖建立時頁面可能還沒排好版(或這一頁還沒顯示),尺寸一變就重新置中,除非讀者自己拖動過
+let moved=false;map.on('dragstart',()=>{moved=true});
+const center=()=>{map.invalidateSize();map.setView(here(),map.getZoom(),{animate:false});pin.setLatLng(here())};
+window.radarMove=()=>{moved=false;center()};
+window.radarShow=window.radarMove;
+if(window.ResizeObserver)new ResizeObserver(()=>{if(moved)map.invalidateSize();else center()}).observe(el);
 let src='rv',frames=[],layers=[],at=0,running=true,timer=null;
 const sources={
  rv:async()=>{const d=await(await fetch('https://api.rainviewer.com/public/weather-maps.json')).json();
@@ -810,7 +1170,7 @@ const sources={
    url:'https://www.jma.go.jp/bosai/jmatile/data/nowc/'+f.basetime+'/none/'+f.validtime+'/surf/hrpns/{z}/{x}/{y}.png',
    opt:{minNativeZoom:4,maxNativeZoom:10}}))}};
 function draw(){layers.forEach((l,i)=>l.setOpacity(i===at?0.7:0));
- if(frames[at])label.textContent=new Date(frames[at].t).toLocaleString([], {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}
+ if(frames[at])label.textContent='雷達時間 '+new Date(frames[at].t).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}
 function tick(){if(!frames.length)return;at=(at+1)%frames.length;draw();
  timer=setTimeout(tick,at===frames.length-1?1800:450)}
 function stop(){clearTimeout(timer);timer=null}
@@ -856,14 +1216,23 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
         for n in names:
             d = by_place[n].get(day)
             cells += (
-                f'<td><span class="wx">{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small>'
-                f'<br><small>{esc(systems[n].get(day, ""))}</small></td>'
+                f'<td><span class="wx">{_icon(d["sky"])}{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small>'
+                f'<br><small class="sys">{esc(systems[n].get(day, ""))}</small></td>'
                 if d else "<td>–</td>"
             )
-        body += f"<tr><th>{esc(_day(day))}</th>{cells}</tr>"
+        body += f'<tr data-day="{day}"><th data-rel>{esc(_day(day))}</th>{cells}</tr>'
     table = (
-        f'<div class="scroll"><table class="zone"><caption>每格依序是天氣、最低–最高氣溫(°C)與降雨機率、主要影響系統。點地名看那個地點的完整分析。</caption>'
+        '<p class="swipe">表格可以左右滑動,看其他地點。</p>'
+        f'<div class="scroll"><table class="zone"><caption>每格依序是天氣、最低–最高氣溫(°C)與降雨機率,以及這個地點的主要影響系統。'
+        "點地名看那個地點的完整分析。</caption>"
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+    )
+    boxes = "".join(
+        f'<details class="wkd"{" open" if i == 0 else ""}><summary>{esc(n)}:{esc(payloads[n]["plain"]["week"]["headline"])}</summary>'
+        + _week_box(payloads[n]["plain"]["week"], f'<p class="sub"><a href="#/place/{i}/plain">看 {esc(n)} 每天的說明</a></p>')
+        + "</details>"
+        for i, n in enumerate(names)
+        if payloads[n].get("plain", {}).get("week")
     )
     merged: dict[tuple[str, str], list[str]] = {}
     for n in names:
@@ -874,7 +1243,8 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
     else:
         hazards = '<p class="sub">各地這一週都沒有大雨、強風或明顯降溫的訊號。</p>'
     return (
-        f'<h1>這一週的天氣</h1><p class="lede">{esc(lede)}</p>'
+        f"<h1>這一週的天氣</h1>{boxes}"
+        f'<h2>天氣系統怎麼演變</h2><p class="lede">{esc(lede)}</p>'
         f"<h2>逐日分區預報</h2>{table}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
         '<p class="sub">分區以這些地點代表,同一個系統在各地的影響不一樣(例如東北季風下,迎風的北部與東部有雨,背風的中南部通常不下)。'
@@ -906,14 +1276,16 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str], pa
     )
     leaflet = "https://unpkg.com/leaflet@1.9.4/dist/leaflet"
     missing = f'<p class="sub">這次沒能更新:{esc("、".join(failed))}。</p>' if failed else ""
-    script = JS.replace("__TABS__", json.dumps([key for key, _ in TABS]))
+    script = JS.replace("__TABS__", json.dumps([key for key, _ in TABS])).replace(
+        "__TOWNS__", json.dumps([list(t) for t in TOWNS], ensure_ascii=False, separators=(",", ":"))
+    ).replace("__CITIES__", json.dumps([list(c) for c in CITIES], ensure_ascii=False, separators=(",", ":")))
     return (
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"><title>一週天氣預報</title>'
         '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         f'<link rel="stylesheet" href="{FONTS}">'
         + (f'<link rel="stylesheet" href="{leaflet}.css">' if radar else "")
-        + f"<style>{CSS}</style><script>document.documentElement.classList.add('js')</script></head><body>"
+        + f"<style>{CSS}</style><script>document.documentElement.classList.add('js')</script></head><body>{ICON_SPRITE}"
         f'<header class="top"><div class="in"><a class="brand" href="#/overview">一週天氣預報</a><nav class="nav" aria-label="主要頁面">{nav}</nav>'
         f'<p class="sub" id="fresh" data-generated="{iso}">更新於 {stamp}</p></div></header><main>'
         f'<section class="page on" data-page="overview">{_overview(names, payloads)}{missing}</section>'
@@ -923,7 +1295,8 @@ def build_page(sections: list[tuple], generated: datetime, failed: list[str], pa
         "不是官方預報。颱風與災害性天氣請以中央氣象署為準。</footer>"
         '</main><div id="tip"></div>'
         + (f'<script src="{leaflet}.js"></script>' if radar else "")
-        + f"<script>{script}{RADAR_JS if radar else ''}</script></body></html>"
+        + f'<script src="{ANIME_URL}"></script>'
+        + f"<script>{script}{RADAR_JS if radar else ''}{HERO_JS}</script></body></html>"
     )
 
 
@@ -942,9 +1315,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--from-file", metavar="PATH", help="改讀存下的原始資料(只產生一個地點,不連網)")
     parser.add_argument("--previous", metavar="PATH", type=Path, help="上一次發布的 data.json,用來比較預報趨勢與校驗")
+    parser.add_argument(
+        "--only-if-older-than", metavar="HOURS", type=float,
+        help="上一次發布的資料還不到這麼多小時就不重算(排程每小時檢查一次時使用)",
+    )
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
+    if args.only_if_older_than is not None:
+        age = previous_age_hours(args.previous, now)
+        if age is not None and 0 <= age < args.only_if_older_than:
+            print(f"上一次發布是 {age:.1f} 小時前,還不到 {args.only_if_older_than:g} 小時,這次不重算")
+            return 0
     previous = load_previous(args.previous)
     sections, data, runs, failed = [], {}, {}, []
     for name in args.places[:1] if args.from_file else args.places:
