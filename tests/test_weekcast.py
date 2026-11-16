@@ -803,7 +803,7 @@ class SiteTest(unittest.TestCase):
         self.assertIn('<article class="place" data-name="台北"', page)
         self.assertIn("逐日高空分析", page)
         self.assertEqual(page.count('class="d d'), 7)  # 時間軸每天一欄
-        self.assertEqual(page.count('<svg viewBox="0 0 720'), 2)  # 兩張圖表(天氣圖示與橫幅另外算)
+        self.assertEqual(page.count('<svg viewBox="0 0 760'), 2)  # 兩張圖表(天氣圖示與橫幅另外算)
         self.assertEqual(len(data["places"]["台北"]["days"]), 7)
         # 四個頁面都在同一個檔案裡,用網址切換;地點頁有六個分頁
         for name in ("overview", "place", "radar", "about"):
