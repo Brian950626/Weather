@@ -912,9 +912,11 @@ class SiteTest(unittest.TestCase):
             self.assertEqual(page.count(f'<section class="page{" on" if name == "overview" else ""}" data-page="{name}"'), 1)
         self.assertEqual(page.count('<section class="view"'), len(site.TABS))
         self.assertIn('<a href="#/place/0/summary">台北</a>', page)  # 總覽的表格連到地點頁
-        self.assertIn("逐日分區預報", page)
+        self.assertIn('<table class="glance">', page)  # 總覽頁的一覽表
         self.assertNotIn("<th>主要影響系統</th><th><a", page)  # 總覽不再用多數決的單一欄位
-        self.assertIn("<br><small class=\"sys\">副熱帶高壓籠罩</small></td>", page)  # 每個地點在自己的格子裡寫出影響系統
+        # 每個地點寫出自己的影響系統(不取多數決);現在放在一覽表下方「為什麼」的各地分段裡
+        self.assertIn('<div class="why-row"><a href="#/place/0/synoptic">台北</a><ol><li class="fair"><b>', page)
+        self.assertIn("</b>副熱帶高壓籠罩<small>", page)
         self.assertEqual(len(data["places"]["台北"]["briefing"]["stages"]), 3)
         self.assertIsNone(data["places"]["台北"]["verification"])
         self.assertIn("還沒有可以校驗的紀錄", page)
@@ -1248,9 +1250,9 @@ class PlainSummaryTest(unittest.TestCase):
             site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
             page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
             data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
-        self.assertEqual(page.count('class="week"'), 2)  # 總覽頁一塊、地點頁一塊
+        self.assertEqual(page.count('class="week"'), 1)  # 地點頁一塊;總覽頁改成一覽表,文字說明用連結
         overview_page = page[page.index('data-page="overview"'):]
-        self.assertLess(overview_page.index('class="week"'), overview_page.index("逐日分區預報"))
+        self.assertIn('href="#/place/0/plain">台北</a>:未來一週', overview_page)  # 總覽頁連到各地的文字說明
         self.assertIn("多雨", data["places"]["台北"]["plain"]["week"]["headline"])
 
     def test_wording_matches_the_sky_labels_on_the_same_page(self):
@@ -1688,10 +1690,48 @@ class EffectsTest(unittest.TestCase):
         overview = self.page[self.page.index('<section class="page on" data-page="overview"'):self.page.index('<section class="page" data-page="place"')]
         self.assertEqual(overview.count('<div class="hero"'), 1)
         self.assertIn('data-name="台北"', overview)
-        self.assertLess(overview.index('class="hero"'), overview.index('class="wkd"'))
+        self.assertLess(overview.index('class="hero"'), overview.index('class="glance"'))
 
     def test_looked_up_places_get_effects_too(self):
         self.assertIn("if(window.fxRun)fxRun()", self.page)
+
+
+class OverviewTest(unittest.TestCase):
+    """總覽頁:先一覽表,再原因與注意事項;長篇文字放在各地點頁。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+        cls.overview = page[page.index('<section class="page on" data-page="overview"'):page.index('<section class="page" data-page="place"')]
+
+    def test_table_comes_first_then_reasons(self):
+        o = self.overview
+        order = [o.index(x) for x in ('<table class="glance">', "注意事項與劇烈天氣", "為什麼:天氣系統怎麼演變", 'class="why"', "各地的文字說明")]
+        self.assertEqual(order, sorted(order))
+        self.assertNotIn('class="wkd"', o)  # 不再把五個地點的整週文字攤在總覽頁
+        self.assertNotIn('class="week"', o)
+
+    def test_one_row_per_place_and_one_column_per_day(self):
+        table = self.overview[self.overview.index('<table class="glance">'):self.overview.index("</table>")]
+        self.assertEqual(table.count("<tr><th><a href="), 1)  # 一個地點一列
+        self.assertEqual(table.count('<th data-day='), 7)
+        self.assertEqual(table.count('<td data-day='), 7)
+        self.assertEqual(table.count('class="ico"'), 7)
+        self.assertIn('<a href="#/place/0/summary">台北</a>', table)
+        self.assertIn('<span class="tt"><b>', table)
+        self.assertIn('<span class="pb" aria-hidden="true"><i style="width:', table)
+
+    def test_reasons_use_plain_words_next_to_the_system_names(self):
+        why = self.overview[self.overview.index('class="why"'):]
+        self.assertIn('href="#/place/0/synoptic">台北</a>', why)
+        self.assertIn("<small>高壓籠罩,天氣穩定、偏暖</small>", why)
+
+    def test_overview_banner_is_slim(self):
+        self.assertIn("data-slim", self.overview)
 
 
 if __name__ == "__main__":

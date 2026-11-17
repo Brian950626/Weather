@@ -159,6 +159,34 @@ details.how summary{cursor:pointer;color:var(--ink)}
 .verdict-ok{color:var(--rain);font-weight:600}.verdict-miss{color:var(--warm);font-weight:600}.verdict-fa{color:var(--ochre);font-weight:600}
 svg{display:block;min-width:620px;width:100%}
 svg.sprite{position:absolute;min-width:0;width:0;height:0}
+/* 總覽的一覽表 */
+.hero[data-slim]{height:132px;margin-bottom:14px}
+table.glance{border-collapse:separate;border-spacing:0;background:var(--sheet);border:1px solid var(--line);border-radius:4px;font-size:14px}
+.glance caption{caption-side:bottom;text-align:left;color:var(--ink2);font-size:13px;padding:8px 2px 0}
+.glance th,.glance td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:center;vertical-align:top}
+.glance tbody tr:last-child th,.glance tbody tr:last-child td{border-bottom:0}
+.glance thead th{font-weight:600;color:var(--ink);white-space:nowrap;border-bottom:2px solid var(--ink)}
+.glance thead th span{color:var(--muted);font-weight:400;margin-left:3px}
+.glance thead th:first-child,.glance tbody th{text-align:left;padding-left:12px}
+.glance tbody th{font-family:var(--kai);font-size:17px;white-space:nowrap;vertical-align:middle}
+.glance tbody th a{text-decoration:none}
+.glance td{min-width:84px;border-left:1px solid var(--line)}
+.glance td .ico{display:block;width:34px;height:34px;margin:0 auto 2px}
+.glance .sk{display:block;font-family:var(--kai);font-weight:700;font-size:14px;white-space:nowrap}
+.glance .tt{display:block;color:var(--ink2);white-space:nowrap}.glance .tt b{color:var(--ink);font-size:15px}
+.glance .pb{display:block;height:4px;margin:5px 8px 2px;background:var(--line);border-radius:2px;overflow:hidden}
+.glance .pb i{display:block;height:100%;background:var(--rain);transform-origin:left}
+.glance small{display:block;font-size:12px;color:var(--muted)}
+.glance td.today,.glance th.today{background:color-mix(in srgb,var(--rain-soft) 32%,transparent)}
+.why{display:grid;gap:10px;margin:10px 0}
+.why-row{display:grid;grid-template-columns:5.5em 1fr;gap:4px 14px;align-items:start;padding:10px 0;border-top:1px solid var(--line)}
+.why-row>a{font-family:var(--kai);font-weight:700;font-size:17px;text-decoration:none}
+.why ol{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+.why li{flex:1 1 240px;margin:0;padding:8px 12px;border-left:4px solid var(--ochre);background:var(--ochre-soft);border-radius:2px;font-size:15px}
+.why li.wet{border-left-color:var(--rain);background:var(--rain-soft)}
+.why li b{display:block;font-size:13px;color:var(--ink2)}
+.why li small{display:block;font-size:13px;color:var(--ink2);margin-top:2px}
+ul.texts li{margin:6px 0}
 /* 動態效果:只在讀者沒有關閉動態效果時才播 */
 .rcol i{transform-origin:bottom}.grid td.cell i{transform-origin:left}
 @media (prefers-reduced-motion:no-preference){
@@ -175,8 +203,8 @@ svg.sprite{position:absolute;min-width:0;width:0;height:0}
 @keyframes fall{0%{transform:translateY(-4px);opacity:0}25%{opacity:1}80%{opacity:1}100%{transform:translateY(5px);opacity:0}}
 }
 @media (hover:hover){
-.d,.stg,.pd,.week,.zone tbody tr,.grid td.cell{transition:background-color .2s,box-shadow .25s}
-.d:hover,.grid td.cell:hover,.zone tbody tr:hover{background:color-mix(in srgb,var(--rain-soft) 40%,transparent)}
+.d,.stg,.pd,.week,.glance td,.grid td.cell{transition:background-color .2s,box-shadow .25s}
+.d:hover,.grid td.cell:hover,.glance td:hover{background:color-mix(in srgb,var(--rain-soft) 40%,transparent)}
 .stg:hover,.week:hover{box-shadow:0 6px 18px -10px color-mix(in srgb,var(--ink) 45%,transparent)}
 .tabs button,#places button,.nav a{transition:color .2s,border-color .25s,background-color .2s}
 }
@@ -244,7 +272,11 @@ details.nums dl{grid-template-columns:1fr}details.nums dt{margin-top:6px}
 .tcol{grid-area:temp;height:auto;flex-direction:row;gap:3px;font-size:15px}.tcol s,.tcol i,.rcol{display:none}
 .tcol span:last-of-type::before{content:"/ ";color:var(--muted)}
 .d .conf{grid-area:conf;flex-wrap:nowrap;justify-self:end}.d .conf em{flex-basis:auto;margin-left:5px}
-.swipe{display:block}.zone th:nth-child(2),.zone td:nth-child(2),.wide{display:none}
+.swipe{display:block}.wide{display:none}
+.hero[data-slim]{height:118px}
+.glance tbody th,.glance thead th:first-child{position:sticky;left:0;z-index:1;background:var(--sheet);box-shadow:1px 0 0 var(--line)}
+.glance td{min-width:76px}.glance tbody th{font-size:16px;padding-left:10px}
+.why-row{grid-template-columns:1fr}
 .week .wh{font-size:21px}
 .hero{height:160px}.hero .cap{left:14px;bottom:12px}.hero .cap b{font-size:28px}.hero .cap .t{font-size:22px}
 }
@@ -818,7 +850,7 @@ def _week_box(week: dict | None, link: str = "") -> str:
     )
 
 
-def _hero(days: list[dict], name: str = "") -> str:
+def _hero(days: list[dict], name: str = "", slim: bool = False) -> str:
     """天氣景象橫幅:太陽、雲、雨的動畫畫面。days 是 report.to_json 裡的逐日資料。
 
     這裡只放每天的資料,畫面由瀏覽器端的 HERO_JS 依「讀者的今天」畫出來;動畫用開源的
@@ -834,7 +866,7 @@ def _hero(days: list[dict], name: str = "") -> str:
     ]
     data = esc(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
     label = f' data-name="{esc(name)}"' if name else ""
-    return f'<div class="hero" data-days="{data}"{label}></div>'
+    return f'<div class="hero" data-days="{data}"{label}{" data-slim" if slim else ""}></div>'
 
 
 def _numbers_help() -> str:
@@ -1179,7 +1211,7 @@ function root(){const pg=document.querySelector('.page.on');if(!pg)return null;
 function fresh(box,sel){return [...box.querySelectorAll(sel)].filter(el=>{
  if(el.dataset.fx||!el.getClientRects().length)return false;el.dataset.fx='1';return true})}
 // 時間軸上的圖示換成內嵌的圖形,太陽才轉得動、雨才落得下來(<use> 引用的圖形無法個別做動畫)
-function liveIcons(box){box.querySelectorAll('.ribbon .wx svg.ico').forEach(svg=>{
+function liveIcons(box){box.querySelectorAll('.ribbon .wx svg.ico, .glance td.today svg.ico').forEach(svg=>{
  if(svg.dataset.live)return;const u=svg.querySelector('use');if(!u)return;
  const sym=document.getElementById((u.getAttribute('href')||'').slice(1));if(!sym)return;
  svg.innerHTML=sym.innerHTML;svg.dataset.live='1';svg.classList.add('live')})}
@@ -1196,7 +1228,8 @@ window.fxRun=function(){const box=root();if(!box)return;liveIcons(box);
  play(fresh(box,'.grid td.cell i'),{scaleX:[0,1],delay:anime.stagger(12),duration:600});
  const cards=fresh(box,'.week, .stg, .pd, .reason, .wkd, .stages, .sheet');
  play(cards,{opacity:[0,base],translateY:[12,0],delay:anime.stagger(70),duration:520,complete:settle(cards)});
- const rows=fresh(box,'table.zone tbody tr, .view.on table:not(.grid) tbody tr');
+ const rows=fresh(box,'table.glance tbody tr, .why-row, .view.on table:not(.grid) tbody tr');
+ play(fresh(box,'.glance .pb i'),{scaleX:[0,1],delay:anime.stagger(18,{start:200}),duration:650,easing:'easeOutQuart'});
  play(rows,{opacity:[0,base],translateX:[-10,0],delay:anime.stagger(35),duration:420,complete:settle(rows)});
  // 橫幅上的高溫由低溫往上數,像電視氣象的數字跳動
  box.querySelectorAll('.hero .cap .t').forEach(t=>{if(t.dataset.fx)return;t.dataset.fx='1';
@@ -1253,13 +1286,57 @@ load();setInterval(load,3e5);
 """
 
 
+def _glance(names: list[str], by_place: dict[str, dict[str, dict]]) -> str:
+    """總覽的主角:各地點一週的天氣一覽表,一列一個地點、一欄一天,像地點預報的時間軸一樣簡潔。"""
+    days = sorted({day for n in names for day in by_place[n]})
+    head = "<th>地點</th>" + "".join(
+        f'<th data-day="{day}" data-rel>{int(day[5:7])}/{int(day[8:10])}<span>{"一二三四五六日"[datetime.fromisoformat(day).weekday()]}</span></th>'
+        for day in days
+    )
+    body = ""
+    for i, n in enumerate(names):
+        cells = ""
+        for day in days:
+            d = by_place[n].get(day)
+            if not d:
+                cells += f'<td data-day="{day}">–</td>'
+                continue
+            hi, lo, pop = d["tmax"]["p50"], d["tmin"]["p50"], d["pop"]
+            tip = f"{n} {_day(day)}\n{d['sky']},高溫 {hi:.0f}°C、低溫 {lo:.0f}°C\n降雨機率 {pop:.0%},信心度{d.get('confidence_label', '')}"
+            cells += (
+                f'<td data-day="{day}" data-tip="{esc(tip)}">{_icon(d["sky"])}<span class="sk">{esc(d["sky"])}</span>'
+                f'<span class="tt"><b>{hi:.0f}°</b> / {lo:.0f}°</span>'
+                f'<span class="pb" aria-hidden="true"><i style="width:{pop * 100:.0f}%"></i></span><small>降雨 {pop:.0%}</small></td>'
+            )
+        body += f'<tr><th><a href="#/place/{i}/summary">{esc(n)}</a></th>{cells}</tr>'
+    return (
+        '<p class="swipe">表格可以左右滑動,看後面幾天。</p>'
+        f'<div class="scroll"><table class="glance"><caption>每格是天氣、最高 / 最低氣溫(°C)與降雨機率,綠色橫條越長越容易下雨。'
+        "點地名看那個地點的完整預報;滑鼠移到格子上可以看信心度。</caption>"
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+    )
+
+
+def _why(names: list[str], payloads: dict[str, dict]) -> str:
+    """一覽表下方的「為什麼」:每個地點這一週由哪些天氣系統主導,專業名稱旁附白話。"""
+    rows = []
+    for i, n in enumerate(names):
+        stages = payloads[n]["briefing"].get("stages") or []
+        chips = "".join(
+            f'<li class="{"fair" if st.get("stable") else "wet"}"><b>{esc(briefing._span(st["days"]))}</b>'
+            f'{esc(st["headline"])}<small>{esc(plain.system_words(st["headline"]))}</small></li>'
+            for st in stages
+        )
+        rows.append(f'<div class="why-row"><a href="#/place/{i}/synoptic">{esc(n)}</a><ol>{chips}</ol></div>')
+    return '<div class="why">' + "".join(rows) + "</div>"
+
+
 def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
-    """總覽頁:一句話的結論、所有地點的逐日預報表、各地的注意事項。"""
+    """總覽頁:最上面是各地一週的天氣一覽表,下面才是原因、注意事項,以及各地文字說明的連結。"""
     if not payloads or not all(n in payloads and payloads[n].get("briefing") for n in names):
         links = "".join(f'<li><a href="#/place/{i}/summary">{esc(n)}</a></li>' for i, n in enumerate(names))
         return f'<h1>一週天氣預報</h1><ul>{links}</ul>'
     by_place = {n: {d["day"]: d for d in payloads[n]["days"]} for n in names}
-    systems = {n: {r["day"]: r["system"] for r in payloads[n]["briefing"]["roles"]} for n in names}
     lede = briefing.island_summary(
         [
             {
@@ -1272,31 +1349,6 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
             for n in names
         ]
     )
-    head = "<th>日期</th>" + "".join(f'<th><a href="#/place/{i}/summary">{esc(n)}</a></th>' for i, n in enumerate(names))
-    body = ""
-    for day in sorted({day for n in names for day in by_place[n]}):
-        cells = ""
-        for n in names:
-            d = by_place[n].get(day)
-            cells += (
-                f'<td><span class="wx">{_icon(d["sky"])}{esc(d["sky"])}</span><br>{d["tmin"]["p50"]:.0f}–{d["tmax"]["p50"]:.0f}<small>({d["pop"]:.0%})</small>'
-                f'<br><small class="sys">{esc(systems[n].get(day, ""))}</small></td>'
-                if d else "<td>–</td>"
-            )
-        body += f'<tr data-day="{day}"><th data-rel>{esc(_day(day))}</th>{cells}</tr>'
-    table = (
-        '<p class="swipe">表格可以左右滑動,看其他地點。</p>'
-        f'<div class="scroll"><table class="zone"><caption>每格依序是天氣、最低–最高氣溫(°C)與降雨機率,以及這個地點的主要影響系統。'
-        "點地名看那個地點的完整分析。</caption>"
-        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
-    )
-    boxes = "".join(
-        f'<details class="wkd"{" open" if i == 0 else ""}><summary>{esc(n)}:{esc(payloads[n]["plain"]["week"]["headline"])}</summary>'
-        + _week_box(payloads[n]["plain"]["week"], f'<p class="sub"><a href="#/place/{i}/plain">看 {esc(n)} 每天的說明</a></p>')
-        + "</details>"
-        for i, n in enumerate(names)
-        if payloads[n].get("plain", {}).get("week")
-    )
     merged: dict[tuple[str, str], list[str]] = {}
     for n in names:
         for hazard, when, _ in payloads[n]["briefing"]["hazards"]:
@@ -1305,14 +1357,22 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
         hazards = _table([["危害", "時間", "地點"], *([h, w, "、".join(p)] for (h, w), p in merged.items())])
     else:
         hazards = '<p class="sub">各地這一週都沒有大雨、強風或明顯降溫的訊號。</p>'
+    texts = "".join(
+        f'<li><a href="#/place/{i}/plain">{esc(n)}</a>:{esc(payloads[n]["plain"]["week"]["headline"])}</li>'
+        for i, n in enumerate(names)
+        if payloads[n].get("plain", {}).get("week")
+    )
     return (
-        f"<h1>這一週的天氣</h1>{_hero(payloads[names[0]]['days'], names[0])}{boxes}"
-        f'<h2>天氣系統怎麼演變</h2><p class="lede">{esc(lede)}</p>'
-        f"<h2>逐日分區預報</h2>{table}"
+        f"<h1>這一週的天氣</h1>{_hero(payloads[names[0]]['days'], names[0], slim=True)}"
+        f"{_glance(names, by_place)}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
-        '<p class="sub">分區以這些地點代表,同一個系統在各地的影響不一樣(例如東北季風下,迎風的北部與東部有雨,背風的中南部通常不下)。'
-        '各地點自己的分段、預報理由與信心度在<a href="#/place">地點預報</a>。'
-        '接下來幾小時的雨看<a href="#/radar">即時雷達</a>。</p>'
+        "<h2>為什麼:天氣系統怎麼演變</h2>"
+        f'<p class="lede">{esc(lede)}</p>'
+        '<p class="sub">各地點這一週的分段。粗體是日期,接著是主導的天氣系統,小字是白話說明;點地名看那裡的綜觀分析。</p>'
+        f"{_why(names, payloads)}"
+        '<p class="sub">同一個系統在各地的影響不一樣,例如東北季風下,迎風的北部與東部有雨,背風的中南部通常不下。</p>'
+        + (f"<h2>各地的文字說明</h2><ul class=\"texts\">{texts}</ul>"
+           '<p class="sub">點地名看那個地點每天的天氣、原因與準備建議。接下來幾小時的雨看<a href="#/radar">即時雷達</a>。</p>' if texts else "")
     )
 
 
