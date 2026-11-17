@@ -1758,8 +1758,8 @@ class WeatherSceneTest(unittest.TestCase):
         for guard in ("prefers-reduced-motion: reduce", "saveData", "2g$", "deviceMemory<2", "getContext('webgl"):
             self.assertIn(guard, js)
         self.assertIn("if(!calm&&!weak&&hasGL())", js)
-        self.assertIn("Math.min(devicePixelRatio||1,1.5)", js)  # 不用滿解析度,省 GPU
-        self.assertIn("IntersectionObserver", js)  # 捲出畫面就暫停
+        self.assertIn("Math.min(devicePixelRatio||1,1.25)", js)  # 整頁背景,解析度壓低一點省 GPU
+        self.assertIn("Math.min(1600,", js)  # 雨絲數量依畫面面積調整,但有上限
 
     def test_every_sky_wording_has_a_3d_scene(self):
         js = self.site.HERO3D_JS
@@ -1768,9 +1768,44 @@ class WeatherSceneTest(unittest.TestCase):
             self.assertIn(f"'{sky}':", scene, sky)
 
     def test_svg_banner_stays_as_the_fallback(self):
-        self.assertIn(".hero.gl .sun,.hero.gl .drift,.hero.gl .rain{display:none}", self.page)  # 3D 接手時才藏 SVG
+        self.assertIn(".hero.see .sun,.hero.see .drift,.hero.see .rain{display:none}", self.page)  # 背景接手時才藏 SVG
         self.assertIn("if(window.hero3d)hero3d()", self.page)
         self.assertIn("(可能是雪)", self.page)
+
+
+class WeatherBackgroundTest(unittest.TestCase):
+    """動畫擴大到整個背景:整頁只有一個畫布,固定在內容後面,讀者可以關掉。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    def test_one_fixed_canvas_behind_the_content(self):
+        js = self.site.HERO3D_JS
+        self.assertIn("canvas.className='bg3d'", js)
+        self.assertIn("document.body.prepend(canvas)", js)
+        self.assertEqual(js.count("new T.WebGLRenderer("), 1)  # 只有一個 WebGL
+        self.assertIn(".bg3d{position:fixed;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none", self.page)
+
+    def test_background_follows_the_place_on_screen(self):
+        js = self.site.HERO3D_JS
+        self.assertIn("const source=()=>document.querySelector('.page.on article.place.on .hero')", js)
+        self.assertIn("if(!bg||k!==key)", js)  # 天氣一樣就不重建
+
+    def test_reader_can_turn_it_off(self):
+        self.assertIn('<button id="fxtoggle" type="button" hidden aria-pressed="true">背景動畫:開</button>', self.page)
+        js = self.site.HERO3D_JS
+        self.assertIn("localStorage.setItem('bgfx'", js)
+        self.assertIn("if(!wanted()){if(bg){bg.stop();", js)
+        self.assertIn("toggle.hidden=false", js)  # 只有真的會載入背景的裝置才顯示開關
+
+    def test_lightning_is_muted_on_the_full_page(self):
+        self.assertIn("flash.material.opacity=lit*.1", self.site.HERO3D_JS)
 
 
 if __name__ == "__main__":
