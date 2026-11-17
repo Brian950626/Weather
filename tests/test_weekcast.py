@@ -1734,5 +1734,44 @@ class OverviewTest(unittest.TestCase):
         self.assertIn("data-slim", self.overview)
 
 
+class WeatherSceneTest(unittest.TestCase):
+    """華麗版的天氣景象(three.js):只在裝置撐得住時、頁面載完之後才載入。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    def test_three_is_pinned_and_loaded_lazily(self):
+        self.assertIn("three@0.160.0", self.site.THREE_URL)
+        self.assertNotIn(f'<script src="{self.site.THREE_URL}"', self.page)  # 不擋住頁面
+        self.assertIn('<script type="module">', self.page)
+        self.assertIn("import(THREE_URL)", self.page)
+        self.assertIn("addEventListener('load',()=>idle(go))", self.page)
+
+    def test_skipped_where_it_would_hurt(self):
+        js = self.site.HERO3D_JS
+        for guard in ("prefers-reduced-motion: reduce", "saveData", "2g$", "deviceMemory<2", "getContext('webgl"):
+            self.assertIn(guard, js)
+        self.assertIn("if(!calm&&!weak&&hasGL())", js)
+        self.assertIn("Math.min(devicePixelRatio||1,1.5)", js)  # 不用滿解析度,省 GPU
+        self.assertIn("IntersectionObserver", js)  # 捲出畫面就暫停
+
+    def test_every_sky_wording_has_a_3d_scene(self):
+        js = self.site.HERO3D_JS
+        scene = js[js.index("const SCENE="):js.index("};", js.index("const SCENE="))]
+        for sky in self.site.ICON_FOR:
+            self.assertIn(f"'{sky}':", scene, sky)
+
+    def test_svg_banner_stays_as_the_fallback(self):
+        self.assertIn(".hero.gl .sun,.hero.gl .drift,.hero.gl .rain{display:none}", self.page)  # 3D 接手時才藏 SVG
+        self.assertIn("if(window.hero3d)hero3d()", self.page)
+        self.assertIn("(可能是雪)", self.page)
+
+
 if __name__ == "__main__":
     unittest.main()
