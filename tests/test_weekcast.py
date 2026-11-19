@@ -1667,7 +1667,7 @@ class EffectsTest(unittest.TestCase):
         self.assertLess(len(self.site.FX_JS.encode("utf-8")), 4_000)
 
     def test_everything_respects_reduced_motion(self):
-        self.assertIn("if(calm||!window.anime)return", self.site.FX_JS)
+        self.assertIn("if(calm||!window.anime||!('IntersectionObserver' in window))return", self.site.FX_JS)
         css = self.page[self.page.index("<style>"):self.page.index("</style>")]
         motion = css[css.index("@media (prefers-reduced-motion:no-preference){"):]
         for name in ("@keyframes spin", "@keyframes fall", "@keyframes bob", "@keyframes fadein"):
@@ -1806,6 +1806,42 @@ class WeatherBackgroundTest(unittest.TestCase):
 
     def test_lightning_is_muted_on_the_full_page(self):
         self.assertIn("flash.material.opacity=lit*.1", self.site.HERO3D_JS)
+
+
+class ScrollEffectsTest(unittest.TestCase):
+    """往下捲動的特效:元素捲進畫面才播;背景從高空降到地面。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from weekcast import site
+
+        cls.site = site
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    def test_reveals_wait_until_scrolled_into_view(self):
+        fx = self.site.FX_JS
+        self.assertIn("new IntersectionObserver(", fx)
+        self.assertIn("io.unobserve(e.target)", fx)  # 每個元素只播一次
+        self.assertIn("el.dataset.op=getComputedStyle(el).opacity;prime(el)", fx)  # 先記下原本的透明度再藏
+        self.assertIn("easeOutBounce", fx)  # 雨柱像雨滴落下彈起
+        self.assertIn("@media print{[data-fxk]{opacity:1!important;transform:none!important}}", self.page)
+
+    def test_background_descends_through_the_atmosphere(self):
+        js = self.site.HERO3D_JS
+        self.assertIn("(scrollY||0)/room", js)  # 捲動進度
+        for layer in ("jetU", "fogU", "splashU", "beamU", "snowBed", "spiral"):
+            self.assertIn(layer, js)
+        self.assertIn("250 hPa 噴流", js)
+        self.assertIn("'地面'", js)
+        self.assertIn("alt.classList.remove('on'),2600", js)  # 高度標示幾秒後淡出,不壓著內文
+
+    def test_typhoon_spiral_only_when_a_low_is_in_the_week(self):
+        self.assertIn("const lowSys=d.low==='1'", self.site.HERO3D_JS)
+        self.assertNotIn('data-low="1"', self.page)  # 樣本這一週沒有低壓或颱風
+        self.assertIn('data-low="1"', self.site._hero([], low=True))
+        self.assertIn('data-south="1"', self.site._hero([], south=True))  # 南半球螺旋方向相反
 
 
 if __name__ == "__main__":
