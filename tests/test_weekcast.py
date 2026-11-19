@@ -915,7 +915,7 @@ class SiteTest(unittest.TestCase):
         self.assertIn('<table class="glance">', page)  # 總覽頁的一覽表
         self.assertNotIn("<th>主要影響系統</th><th><a", page)  # 總覽不再用多數決的單一欄位
         # 每個地點寫出自己的影響系統(不取多數決);現在放在一覽表下方「為什麼」的各地分段裡
-        self.assertIn('<div class="why-row"><a href="#/place/0/synoptic">台北</a><ol><li class="fair"><b>', page)
+        self.assertIn('<div class="why-row" data-place="台北"><a href="#/place/0/synoptic">台北</a><ol><li class="fair"><b>', page)
         self.assertIn("</b>副熱帶高壓籠罩<small>", page)
         self.assertEqual(len(data["places"]["台北"]["briefing"]["stages"]), 3)
         self.assertIsNone(data["places"]["台北"]["verification"])
@@ -1122,10 +1122,7 @@ class PeriodTest(unittest.TestCase):
 class BrowserSearchTest(unittest.TestCase):
     """網頁搜尋欄用的進入點:抓資料的方式不同,分析必須和命令列相同。"""
 
-    def run_forecast(self, fail=()):
-        import asyncio
-        from weekcast import browser
-
+    def fake_get(self, fail=()):
         bundle = client.load_raw(FIXTURE)
         asked = []
 
@@ -1138,7 +1135,46 @@ class BrowserSearchTest(unittest.TestCase):
             return {"surface": bundle["surface"], "profile": bundle["upper"]["profile"],
                     "cross": bundle["upper"]["cross"]["data"], "periods": bundle["periods"]}[kind]
 
+        return get, asked
+
+    def run_forecast(self, fail=()):
+        import asyncio
+        from weekcast import browser
+
+        get, asked = self.fake_get(fail)
         return asyncio.run(browser.forecast("枋寮", 25.05, 121.53, 7, get)), asked
+
+    def test_bundle_serves_both_the_place_tab_and_the_comparison(self):
+        import asyncio
+        from weekcast import browser
+
+        get, asked = self.fake_get()
+        out = json.loads(asyncio.run(browser.bundle("東港", 22.46, 120.47, 7, get)))
+        self.assertEqual(len(asked), 4)  # 抓一次,地點分頁與總覽的比較共用
+        self.assertEqual(out["block"].count('data-view="summary"'), 1)
+        self.assertNotIn("runs", out["data"])  # 搜尋的地點沒有歷次紀錄
+        self.assertEqual(len(out["data"]["days"]), 7)
+
+    def test_overview_redraws_presets_and_added_places_the_same_way(self):
+        import asyncio
+        from weekcast import browser, site
+
+        get, _ = self.fake_get()
+        added = json.loads(asyncio.run(browser.bundle("東港", 22.46, 120.47, 7, get)))["data"]
+        bundle = client.load_raw(FIXTURE)
+        raw, upper_raw = client.split_bundle(bundle)
+        _, taipei = site.build_place("台北", raw, upper_raw, 7, bundle.get("periods"))
+        taipei.pop("runs")  # data.json 裡的預設地點也沒有 runs
+        payloads = json.dumps({"台北": taipei, "東港": added}, ensure_ascii=False)
+        html = browser.overview(json.dumps(["台北", "東港"]), payloads, json.dumps({"台北": 0, "東港": 5}))
+        self.assertIn('<tr data-place="東港"><th><a href="#/place/5/summary">東港</a></th>', html)  # 連到它在地點預報裡的分頁
+        self.assertIn('<tr data-place="台北"><th><a href="#/place/0/summary">台北</a></th>', html)
+        self.assertIn('<div class="why-row" data-place="東港">', html)
+        self.assertIn('class="hero" data-days=', html)
+        self.assertIn('data-name="台北"', html)  # 橫幅是第一個地點
+        self.assertIn('id="ovlede"', html)
+        # 分頁位置沒給時,照順序
+        self.assertIn('href="#/place/0/summary">東港</a>', browser.overview(json.dumps(["東港"]), payloads, "{}"))
 
     def test_same_sections_as_the_scheduled_page(self):
         block, asked = self.run_forecast()
@@ -1717,7 +1753,7 @@ class OverviewTest(unittest.TestCase):
 
     def test_one_row_per_place_and_one_column_per_day(self):
         table = self.overview[self.overview.index('<table class="glance">'):self.overview.index("</table>")]
-        self.assertEqual(table.count("<tr><th><a href="), 1)  # 一個地點一列
+        self.assertEqual(table.count('<tr data-place="台北"><th><a href='), 1)  # 一個地點一列,標上地名讓讀者自選要比較的地點
         self.assertEqual(table.count('<th data-day='), 7)
         self.assertEqual(table.count('<td data-day='), 7)
         self.assertEqual(table.count('class="ico"'), 7)
@@ -1732,6 +1768,102 @@ class OverviewTest(unittest.TestCase):
 
     def test_overview_banner_is_slim(self):
         self.assertIn("data-slim", self.overview)
+
+
+class CompareTest(unittest.TestCase):
+    """總覽可以自選要比較的地點:預設地點直接在畫面上切換,加入的地點在瀏覽器裡算好再一起比。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import copy
+        from weekcast import site
+
+        cls.site = site
+        bundle = client.load_raw(FIXTURE)
+        raw, upper_raw = client.split_bundle(bundle)
+        _, taipei = site.build_place("台北", raw, upper_raw, 7, bundle.get("periods"))
+        taipei.pop("runs")
+        # 另外兩個地點用同一份資料改位置:花蓮(東部)整週乾燥、沒有危害;枋寮(南部)和台北一樣
+        hualien = copy.deepcopy(taipei)
+        hualien["location"].update(latitude=23.98, longitude=121.6)
+        hualien["briefing"]["hazards"] = []
+        for d in hualien["days"]:
+            d["pop"] = 0.05
+        fangliao = copy.deepcopy(taipei)
+        fangliao["location"].update(latitude=22.37, longitude=120.59)
+        cls.names = ["台北", "花蓮", "枋寮"]
+        cls.payloads = {"台北": taipei, "花蓮": hualien, "枋寮": fangliao}
+        cls.html = site._overview(cls.names, cls.payloads)
+        cls.data = cls.read_data(cls.html)
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            site.main(["台北", "--out", tmp, "--from-file", FIXTURE])
+            cls.page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
+
+    @staticmethod
+    def read_data(html):
+        start = html.index('<script type="application/json" id="ovdata">') + len('<script type="application/json" id="ovdata">')
+        return json.loads(html[start:html.index("</script>", start)])
+
+    def test_every_combination_of_presets_has_its_conclusion(self):
+        ledes = self.data["ledes"]
+        self.assertEqual(self.data["names"], self.names)
+        self.assertEqual(len(ledes), 2 ** 3 - 1)  # 只切換預設地點時不必在瀏覽器裡跑分析程式
+        # 只選一個地點時用那個地點自己的結論(「各地都有雨」不通順)
+        self.assertEqual(ledes["花蓮"], self.payloads["花蓮"]["briefing"]["lede"])
+        # 全部地點的結論就是頁面上原本那一句;拿掉乾燥的花蓮,兩地都有雨的日子才是「各地都有雨」
+        self.assertIn(f'<p class="lede" id="ovlede">{self.site.esc(ledes["台北|花蓮|枋寮"])}</p>', self.html)
+        self.assertNotIn("各地都有雨", ledes["台北|花蓮|枋寮"])
+        self.assertIn("東部大致穩定", ledes["台北|花蓮|枋寮"])
+        self.assertIn("11/14(六)–11/16(一)、11/18(三) 各地都有雨", ledes["台北|枋寮"])
+
+    def test_each_part_is_tagged_with_its_place(self):
+        # 一覽表一列、「為什麼」一段、文字說明一條,都標上地名,瀏覽器才能只顯示勾選的地點
+        self.assertEqual(self.html.count('data-place="花蓮"'), 3)
+        # 注意事項一列可能涉及好幾個地點,記下全部,取消勾選其中一個時改寫「地點」欄
+        places = self.site.esc(json.dumps(["台北", "枋寮"], ensure_ascii=False))
+        self.assertIn(f'<tr data-places="{places}"><th>降溫</th><td>11/18(三)</td><td class="where">台北、枋寮</td></tr>', self.html)
+        self.assertIn('<p class="sub nohaz" hidden>', self.html)  # 有危害時「沒有危害」那句先藏著
+        dry = self.site._overview(["花蓮"], self.payloads)
+        self.assertIn('<div class="scroll hazards" hidden>', dry)
+        self.assertIn('<p class="sub nohaz">', dry)
+
+    def test_banner_of_every_preset_is_ready(self):
+        heroes = self.data["heroes"]
+        self.assertEqual(list(heroes), self.names)
+        self.assertEqual(heroes["花蓮"]["rows"], self.site._hero_rows(self.payloads["花蓮"]["days"]))
+        self.assertEqual((heroes["枋寮"]["low"], heroes["枋寮"]["south"]), (False, False))
+        self.assertIn('data-name="台北"', self.html)  # 預設先畫第一個地點
+
+    def test_many_presets_leave_combinations_to_the_browser(self):
+        many = {f"地點{i}": self.payloads["台北"] for i in range(self.site.MAX_PRECOMPUTED + 1)}
+        data = self.read_data(self.site._overview(list(many), many))
+        self.assertEqual(data["ledes"], {})  # 組合太多(2^8 − 1)就不預先算,交給瀏覽器裡的 Python
+        self.assertEqual(len(data["heroes"]), len(many))
+
+    def test_place_names_cannot_end_the_data_block(self):
+        odd = {"甲</script><b>": self.payloads["台北"]}
+        html = self.site._overview(list(odd), odd)
+        self.assertEqual(html.count("</script>"), 1)
+        self.assertEqual(self.read_data(html)["names"], list(odd))
+
+    def test_picker_is_on_the_page_and_remembered(self):
+        o = self.page[self.page.index('<section class="page on" data-page="overview"'):self.page.index('<section class="page" data-page="place"')]
+        self.assertLess(o.index('id="pickchips"'), o.index('<table class="glance">'))  # 選單在一覽表上面
+        self.assertIn('id="addcmp"', o)
+        self.assertIn('id="ovdata"', o)
+        self.assertIn(".pick{display:none;margin:2px 0 14px}.js .pick{display:block}", self.page)  # 沒有 JavaScript 時不顯示用不了的選單
+        js = self.site.JS
+        self.assertIn("localStorage.getItem('compare')", js)  # 記在讀者的瀏覽器裡
+        self.assertIn("至少要選一個地點。", js)
+        self.assertIn("fetch('data.json',{cache:'no-store'})", js)  # 預設地點的資料
+        self.assertIn("sessionStorage.setItem('wk:'+k", js)  # 加入的地點 3 小時內不重算
+        self.assertIn("p.runPython('from weekcast.browser import forecast, bundle, overview')", js)
+        self.assertIn("searchBox(form,box,", js)  # 兩個搜尋欄共用同一套找地點的方式
+        self.assertIn("searchBox(addf,addq,", js)
+        self.assertIn("missed.push(p.name)", js)  # 某個地點抓不到時先比較其他地點
+        self.assertIn("b.textContent='再試一次'", js)  # 並且可以再試一次
+        self.assertIn("const ovKey=sig=>'ov:'+built+':'+sig", js)  # 畫好的比較表跟著這一版的資料記住,重新整理不必重算
+        self.assertIn("const sig=JSON.stringify([pre,cus,cus.map(p=>index[p.name])])", js)  # 分頁位置變了就重畫,連結才不會指錯
 
 
 class WeatherSceneTest(unittest.TestCase):

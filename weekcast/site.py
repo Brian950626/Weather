@@ -142,6 +142,21 @@ details.nums dt{font-weight:600;color:var(--ink);white-space:nowrap}details.nums
 #q{font:inherit;font-size:15px;padding:6px 10px;border:1px solid var(--ink2);border-radius:4px;background:var(--sheet);color:var(--ink);width:min(330px,100%)}
 #find>button{font:inherit;font-size:15px;padding:6px 14px;border:1px solid var(--ink);border-radius:4px;background:var(--ink);color:var(--sheet);cursor:pointer}
 #fmsg{font-size:14px;color:var(--ink2)}#hits{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}
+[hidden]{display:none!important}
+/* 總覽:自選比較的地點 */
+.pick{display:none;margin:2px 0 14px}.js .pick{display:block}
+.pick-h{margin:0 0 6px;font-weight:600}.pick-h small{font-weight:400;color:var(--muted);margin-left:8px;font-size:13px}
+#pickchips{display:flex;flex-wrap:wrap;gap:6px}
+#pickchips label{display:inline-flex;align-items:center;gap:6px;padding:4px 12px 4px 9px;border:1px solid var(--ink2);border-radius:999px;background:var(--sheet);font-size:15px;cursor:pointer;user-select:none}
+#pickchips label.custom{border-style:dashed}
+#pickchips input{margin:0;accent-color:var(--rain)}
+#pickchips label:has(input:checked){background:var(--ink);color:var(--sheet);border-color:var(--ink)}
+#pickchips label:has(input:focus-visible){outline:2px solid var(--cold);outline-offset:2px}
+#addcmp{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 0}
+#addq{font:inherit;font-size:14px;padding:5px 10px;border:1px solid var(--ink2);border-radius:4px;background:var(--sheet);color:var(--ink);flex:1 1 180px;min-width:0;max-width:330px}
+#addcmp>button{font:inherit;font-size:14px;padding:5px 12px;border:1px solid var(--ink2);border-radius:4px;background:transparent;color:var(--ink);cursor:pointer}
+#addmsg{font-size:13px;color:var(--ink2)}#addmsg button{font:inherit;font-size:13px;padding:2px 9px;margin-left:6px;border:1px solid var(--ink2);border-radius:4px;background:transparent;color:var(--ink);cursor:pointer}#addhits{display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%}
+#addhits button{font:inherit;font-size:14px;padding:4px 11px;border:1px solid var(--ink2);border-radius:4px;background:transparent;color:var(--ink);cursor:pointer}
 .stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));background:var(--sheet);border:1px solid var(--line);border-radius:4px;margin:10px 0}
 .stg{padding:14px 18px 16px;border-top:5px solid var(--ochre)}
 .stg.rain{border-top-color:var(--rain)}.stg.cold{border-top-color:var(--cold)}
@@ -369,7 +384,7 @@ async function engine(){if(py)return py;py=(async()=>{
  const base='https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
  const {loadPyodide}=await import(base+'pyodide.mjs');const p=await loadPyodide({indexURL:base});
  p.unpackArchive(await(await fetch('weekcast.zip')).arrayBuffer(),'zip');
- p.runPython('from weekcast.browser import forecast');return p})();
+ p.runPython('from weekcast.browser import forecast, bundle, overview');return p})();
  py.catch(()=>{py=null});return py}
 function saved(){try{return JSON.parse(localStorage.getItem('custom')||'[]')}catch(e){return []}}
 function keep(list){try{localStorage.setItem('custom',JSON.stringify(list))}catch(e){}}
@@ -380,12 +395,26 @@ function addTab(name,lat,lon){
  s.innerHTML='<h1>'+esc(name)+'</h1><p class="wait"></p>';
  secs().pop().after(s);return tabs().length-1}
 function drop(b){const i=tabs().indexOf(b),s=secs()[i];keep(saved().filter(p=>!(p.name===s.dataset.name&&p.lat==s.dataset.lat)));
- b.remove();s.remove();go('place',0,TABS[0])}
+ const c=cmp();c.on=c.on.filter(n=>n!==s.dataset.name);keepCmp(c);
+ b.remove();s.remove();drawChips();go('place',0,TABS[0])}
+// 同一個地點只算一次:地點分頁與總覽的比較共用同一份結果,3 小時內重新整理也不必重算
+// 進度訊息給最後一個在等這個地點的畫面(地點分頁或總覽)
+const done=new Map();
+function ensure(name,lat,lon,say){const k=name+'@'+(+lat).toFixed(3)+','+(+lon).toFixed(3);
+ let e=done.get(k);if(e){if(say)e.say=say;return e.job}
+ e={say};const tell=t=>{if(e.say)e.say(t)};
+ e.job=(async()=>{
+  try{const c=JSON.parse(sessionStorage.getItem('wk:'+k)||'null');if(c&&Date.now()-c.at<108e5)return c.v}catch(x){}
+  tell('正在載入分析程式,第一次約需 10–20 秒。');const p=await engine();
+  tell('正在抓取 '+name+' 的系集資料並分析。');
+  const v=JSON.parse(await p.globals.get('bundle')(name,+lat,+lon));
+  try{sessionStorage.setItem('wk:'+k,JSON.stringify({at:Date.now(),v}))}catch(x){}
+  return v})();
+ done.set(k,e);e.job.catch(()=>done.delete(k));return e.job}
 async function compute(s){delete s.dataset.pending;const w=s.querySelector('.wait');
- try{w.textContent='正在載入分析程式,第一次約需 10–20 秒。';const p=await engine();
-  w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析。';
-  const html=await p.globals.get('forecast')(s.dataset.name,+s.dataset.lat,+s.dataset.lon);
-  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+html;paint();markDays();if(window.heroPaint)heroPaint();if(window.fxRun)fxRun()}
+ try{w.textContent='正在抓取 '+s.dataset.name+' 的系集資料並分析。';
+  const v=await ensure(s.dataset.name,s.dataset.lat,s.dataset.lon,t=>{w.textContent=t});
+  s.innerHTML='<h1>'+esc(s.dataset.name)+'</h1>'+v.block;paint();markDays();if(window.heroPaint)heroPaint();if(window.fxRun)fxRun()}
  catch(e){s.dataset.pending='1';w.textContent='無法取得預報:'+explain(e)+'請再點一次這個地點重試。'}}
 // 把程式或瀏覽器的英文錯誤訊息換成看得懂的中文
 function explain(e){const t=String(e&&e.message||e);try{console.warn('weekcast:',t)}catch(x){}
@@ -397,7 +426,7 @@ function explain(e){const t=String(e&&e.message||e);try{console.warn('weekcast:'
  return '發生預期外的狀況。'}
 function open(name,lat,lon){hits.innerHTML='';msg.textContent='';box.value='';
  const list=saved();if(!list.some(p=>p.name===name&&p.lat==lat)){list.push({name,lat,lon});keep(list)}
- go('place',addTab(name,lat,lon),TABS[0])}
+ const i=addTab(name,lat,lon);drawChips();go('place',i,TABS[0])}
 // 先查內建的臺灣鄉鎮市區清單(不連網、一定是中文);查不到才問外部的地名服務
 const TOWNS=__TOWNS__,CITIES=__CITIES__,norm=t=>t.trim().replace(/臺/g,'台').replace(/\\s+/g,'');
 function localHits(text){const q=norm(text);if(!q)return [];const out=[];
@@ -411,24 +440,15 @@ function localHits(text){const q=norm(text);if(!q)return [];const out=[];
   const rank=(q===name||q===bare||low===e)?0:(name.startsWith(q)||e.startsWith(low))?1:(q.length>=2&&(name.includes(q)||e.includes(low)||q===country))?2:-1;
   if(rank>=0)out.push({rank,name:bare,where:country,lat,lon})}
  return out.sort((a,b)=>a.rank-b.rank).slice(0,8)}
-function offer(list,note){hits.innerHTML='';msg.textContent=note;
- list.forEach(o=>{const b=document.createElement('button');b.type='button';
-  b.textContent=o.name+(o.where?'('+o.where+')':'');b.addEventListener('click',()=>open(o.name,+(+o.lat).toFixed(4),+(+o.lon).toFixed(4)));hits.appendChild(b)})}
-// 邊打邊列出符合的鄉鎮;注音或倉頡還在選字時先不動
-box.addEventListener('input',e=>{if(e.isComposing)return;const found=localHits(box.value);
- if(found.length)offer(found,'請選擇:');else{hits.innerHTML='';msg.textContent=''}});
-box.addEventListener('compositionend',()=>{const found=localHits(box.value);if(found.length)offer(found,'請選擇:')});
-form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.trim();hits.innerHTML='';if(!q)return;
- const m=q.match(/^(-?\\d+(?:\\.\\d+)?)\\s*[,,\\s]\\s*(-?\\d+(?:\\.\\d+)?)$/);
- if(m&&Math.abs(+m[1])<=90&&Math.abs(+m[2])<=180){open((+m[1]).toFixed(2)+', '+(+m[2]).toFixed(2),+m[1],+m[2]);return}
- const found=localHits(q);
- if(found.length===1){open(found[0].name,found[0].lat,found[0].lon);return}
- if(found.length){offer(found,'請選擇:');return}
- msg.textContent='搜尋中';
+// 找地點:座標 → 內建的臺灣鄉鎮與世界城市 → 氣象資料來源的地名服務 → Photon。direct 表示不必再選,可以直接用
+const COORD=/^(-?\\d+(?:\\.\\d+)?)\\s*[,,\\s]\\s*(-?\\d+(?:\\.\\d+)?)$/;
+async function lookup(q){const m=q.match(COORD);
+ if(m&&Math.abs(+m[1])<=90&&Math.abs(+m[2])<=180)return {list:[{name:(+m[1]).toFixed(2)+', '+(+m[2]).toFixed(2),lat:+m[1],lon:+m[2]}],direct:true};
+ const found=localHits(q);if(found.length)return {list:found,direct:found.length===1};
  // 清單裡沒有的地名:先問氣象資料來源自己的地名服務(較穩定,有中文名就用中文),問不到再問 Photon
  try{const g=await(await fetch('https://geocoding-api.open-meteo.com/v1/search?count=8&language=zh&name='+encodeURIComponent(q))).json();
-  const found=(g.results||[]).map(r=>({name:r.name,where:[r.admin1,r.country].filter((v,i,a)=>v&&v!==r.name&&a.indexOf(v)===i).join('、'),lat:r.latitude,lon:r.longitude}));
-  if(found.length){offer(found.slice(0,6),'請選擇:');return}}catch(err){}
+  const list=(g.results||[]).map(r=>({name:r.name,where:[r.admin1,r.country].filter((v,i,a)=>v&&v!==r.name&&a.indexOf(v)===i).join('、'),lat:r.latitude,lon:r.longitude}));
+  if(list.length)return {list:list.slice(0,6)}}catch(err){}
  try{const url='https://photon.komoot.io/api/?limit=8&lat=23.7&lon=121&q='+encodeURIComponent(q);
   // lang=default 讓地名用當地的文字,不跟著瀏覽器的語言變成英文;服務不接受這個參數時退回原本的查法
   let r=await fetch(url+'&lang=default');if(!r.ok)r=await fetch(url);
@@ -437,11 +457,107 @@ form.addEventListener('submit',async e=>{e.preventDefault();const q=box.value.tr
   for(const f of d.features||[]){const p=f.properties,[lon,lat]=f.geometry.coordinates;
    const where=[p.city,p.county,p.state,p.country].filter((v,i,a)=>v&&v!==p.name&&a.indexOf(v)===i).join('、');
    const key=lat.toFixed(1)+','+lon.toFixed(1);if(seen.has(key))continue;seen.add(key);out.push({name:p.name||q,where,lat,lon})}
-  if(!out.length){msg.textContent='找不到「'+q+'」。臺灣的地點請輸入鄉鎮市區的名稱(例如 東港、恆春鎮、屏東縣枋山鄉),或輸入座標,例如 22.37,120.59';return}
-  offer(out.slice(0,6),'請選擇:')}
- catch(err){msg.textContent='找不到「'+q+'」。臺灣請輸入鄉鎮市區(例如 東港、恆春鎮);國外請輸入城市的中文或英文名(例如 東京、Paris),或直接輸入座標,例如 35.68,139.69'}});
+  return {list:out.slice(0,6)}}
+ catch(err){return {list:[]}}}
+function offer(list,note,where,act){where.hits.innerHTML='';where.msg.textContent=note;
+ list.forEach(o=>{const b=document.createElement('button');b.type='button';
+  b.textContent=o.name+(o.where?'('+o.where+')':'');b.addEventListener('click',()=>act(o.name,+(+o.lat).toFixed(4),+(+o.lon).toFixed(4)));where.hits.appendChild(b)})}
+const MISS=q=>'找不到「'+q+'」。臺灣請輸入鄉鎮市區(例如 東港、恆春鎮);國外請輸入城市的中文或英文名(例如 東京、Paris),或直接輸入座標,例如 35.68,139.69';
+// 「地點預報」的搜尋欄與總覽的「加入比較」共用:邊打邊列出內建清單裡符合的地點(注音或倉頡選字時先不動),送出才查外部的地名服務
+function searchBox(f,input,where,act){
+ input.addEventListener('input',e=>{if(e.isComposing)return;const found=localHits(input.value);
+  if(found.length)offer(found,'請選擇:',where,act);else{where.hits.innerHTML='';where.msg.textContent=''}});
+ input.addEventListener('compositionend',()=>{const found=localHits(input.value);if(found.length)offer(found,'請選擇:',where,act)});
+ f.addEventListener('submit',async e=>{e.preventDefault();const q=input.value.trim();where.hits.innerHTML='';if(!q)return;
+  where.msg.textContent='搜尋中';const r=await lookup(q);
+  if(r.direct){where.msg.textContent='';act(r.list[0].name,r.list[0].lat,r.list[0].lon);return}
+  if(r.list.length){offer(r.list,'請選擇:',where,act);return}
+  where.msg.textContent=MISS(q)})}
+searchBox(form,box,{hits,msg},open);
 saved().forEach(p=>addTab(p.name,p.lat,p.lon));
 route();
+
+// ---- 總覽:自選要一起比較的地點 ----
+const ov=document.getElementById('ovbody'),ovd=document.getElementById('ovdata');
+const OV=ovd?JSON.parse(ovd.textContent):null,ORIGINAL=ov?ov.innerHTML:'';
+const pickc=document.getElementById('pickchips'),addf=document.getElementById('addcmp'),addq=document.getElementById('addq'),
+ addhits=document.getElementById('addhits'),addmsg=document.getElementById('addmsg');
+// 記在瀏覽器裡:off 是取消勾選的預設地點,on 是勾選要比較的、自己加入的地點
+function cmp(){try{return Object.assign({off:[],on:[]},JSON.parse(localStorage.getItem('compare')||'{}'))}catch(e){return {off:[],on:[]}}}
+function keepCmp(c){try{localStorage.setItem('compare',JSON.stringify(c))}catch(e){}}
+function customs(){const seen=new Set(OV?OV.names:[]);return saved().filter(p=>!seen.has(p.name)&&seen.add(p.name))}
+function chosen(){const c=cmp();return {pre:OV?OV.names.filter(n=>!c.off.includes(n)):[],cus:customs().filter(p=>c.on.includes(p.name))}}
+function drawChips(){if(!pickc||!OV)return;const c=cmp();pickc.innerHTML='';
+ const chip=(name,on,custom)=>{const l=document.createElement('label');if(custom)l.className='custom';
+  const i=document.createElement('input');i.type='checkbox';i.checked=on;i.addEventListener('change',()=>toggleCmp(name,custom,i));
+  l.append(i,document.createTextNode(name));pickc.append(l)};
+ OV.names.forEach(n=>chip(n,!c.off.includes(n),false));customs().forEach(p=>chip(p.name,c.on.includes(p.name),true))}
+function toggleCmp(name,custom,input){const c=cmp();
+ if(custom)c.on=input.checked?[...new Set([...c.on,name])]:c.on.filter(n=>n!==name);
+ else c.off=input.checked?c.off.filter(n=>n!==name):[...new Set([...c.off,name])];
+ if(!OV.names.some(n=>!c.off.includes(n))&&!customs().some(p=>c.on.includes(p.name))){input.checked=true;addmsg.textContent='至少要選一個地點。';return}
+ addmsg.textContent='';keepCmp(c);applyCmp()}
+// 只有預設地點:直接在畫面上顯示或隱藏,跨地點的結論與橫幅用事先準備好的,不必跑分析程式
+function showPresets(pre){const sel=new Set(pre);
+ ov.querySelectorAll('[data-place]').forEach(el=>{el.hidden=!sel.has(el.dataset.place)});
+ let any=false;ov.querySelectorAll('tr[data-places]').forEach(tr=>{const ps=JSON.parse(tr.dataset.places).filter(n=>sel.has(n));
+  tr.hidden=!ps.length;if(ps.length){any=true;tr.querySelector('.where').textContent=ps.join('、')}});
+ const hz=ov.querySelector('.hazards'),no=ov.querySelector('.nohaz');if(hz)hz.hidden=!any;if(no)no.hidden=any;
+ const l=ov.querySelector('#ovlede'),key=pre.join('|');
+ if(l){if(key in OV.ledes){const t=OV.ledes[key];l.textContent=t;l.hidden=!t}else if(pre.length!==OV.names.length)l.hidden=true}
+ const h=ov.querySelector('.hero'),d=OV.heroes[pre[0]];
+ if(h&&d){h.dataset.days=JSON.stringify(d.rows);h.dataset.name=pre[0];
+  if(d.low)h.dataset.low='1';else delete h.dataset.low;if(d.south)h.dataset.south='1';else delete h.dataset.south}}
+function refreshOv(){markDays();if(window.heroPaint)heroPaint();if(window.fxRun)fxRun()}
+// 加入的地點若還沒在「地點預報」裡算過,順便填上,點過去就不必再等
+function fillTab(p,v){secs().forEach(s=>{if(s.dataset.pending&&s.dataset.name===p.name&&s.dataset.lat==p.lat){
+ delete s.dataset.pending;s.innerHTML='<h1>'+esc(p.name)+'</h1>'+v.block}})}
+let allData=null,cmpGen=0,cmpSig='';
+// 畫好的比較表記在這個分頁裡(跟著網站這一版的資料):重新整理時不必等分析程式重新載入
+const ovKey=sig=>'ov:'+built+':'+sig;
+// 抓不到時說明原因,附上「再試一次」(例如查詢太頻繁,等一分鐘再按)
+function retry(text){addmsg.textContent=text;const b=document.createElement('button');b.type='button';b.textContent='再試一次';
+ b.addEventListener('click',()=>{cmpSig='';applyCmp()});addmsg.append(b)}
+async function applyCmp(){if(!ov||!OV)return;const {pre,cus}=chosen(),index={};secs().forEach((s,i)=>{index[s.dataset.name]=i});
+ // 加入的地點在「地點預報」的分頁位置也算在內:移除別的地點後位置會變,表格裡的連結要跟著改
+ const sig=JSON.stringify([pre,cus,cus.map(p=>index[p.name])]);
+ if(sig===cmpSig)return;cmpSig=sig;const my=++cmpGen;
+ const ready=pre.join('|') in OV.ledes||pre.length===OV.names.length;
+ if(!cus.length&&ready){if(ov.dataset.mode==='custom'){ov.innerHTML=ORIGINAL;delete ov.dataset.mode}addmsg.textContent='';showPresets(pre);refreshOv();return}
+ // 有加入的地點:在瀏覽器裡算出它們的預報,連同預設地點(資料在 data.json)用同一份 Python 重畫。
+ // 算好之前先把預設地點照勾選顯示,讀者馬上看得到變化
+ const say=t=>{if(my===cmpGen)addmsg.textContent=t};
+ try{const c=JSON.parse(sessionStorage.getItem(ovKey(sig))||'null');
+  if(c&&Date.now()-c.at<108e5){ov.innerHTML=c.html;ov.dataset.mode='custom';addmsg.textContent='';refreshOv();return}}catch(x){}
+ // 加入的地點還沒算好,不能先說「選的地點都沒有危害」
+ if(ov.dataset.mode!=='custom'&&pre.length){showPresets(pre);const no=ov.querySelector('.nohaz');if(no)no.hidden=true;refreshOv()}
+ try{allData=allData||await(await fetch('data.json',{cache:'no-store'})).json();
+  const datas={},missed=[];let why='',err=null;pre.forEach(n=>{if(allData.places&&allData.places[n])datas[n]=allData.places[n]});
+  // 某個加入的地點這次抓不到(例如查詢太頻繁),先比較其他地點,附上「再試一次」
+  for(const p of cus){try{const v=await ensure(p.name,p.lat,p.lon,say);datas[p.name]=v.data;fillTab(p,v)}catch(e){missed.push(p.name);err=e;why=explain(e)}}
+  if(my!==cmpGen)return;
+  const names=[...pre,...cus.map(p=>p.name)].filter(n=>datas[n]);
+  if(!names.length)throw err||new Error('沒有可用的資料');
+  say('正在整理比較表。');const p=await engine();if(my!==cmpGen)return;
+  const html=p.globals.get('overview')(JSON.stringify(names),JSON.stringify(datas),JSON.stringify(index));
+  ov.innerHTML=html;ov.dataset.mode='custom';
+  if(missed.length){cmpSig='';retry(missed.join('、')+' 這次沒有加入比較:'+why)}
+  else{say('');try{sessionStorage.setItem(ovKey(sig),JSON.stringify({at:Date.now(),html}))}catch(x){}}
+  refreshOv()}
+ catch(e){cmpSig='';if(my!==cmpGen)return;
+  // 分析程式或資料載入失敗:至少把勾選的預設地點顯示對(只勾了加入的地點時,先顯示全部預設地點)
+  if(ov.dataset.mode==='custom'){ov.innerHTML=ORIGINAL;delete ov.dataset.mode}showPresets(pre.length?pre:OV.names);refreshOv();
+  retry('無法加入比較:'+explain(e))}}
+function addCmp(name,lat,lon){addq.value='';addhits.innerHTML='';addmsg.textContent='';
+ if(OV.names.includes(name)){const c=cmp();c.off=c.off.filter(n=>n!==name);keepCmp(c);drawChips();applyCmp();return}
+ const list=saved();if(!list.some(p=>p.name===name&&p.lat==lat)){list.push({name,lat,lon});keep(list);addTab(name,lat,lon)}
+ const c=cmp();if(!c.on.includes(name))c.on.push(name);keepCmp(c);drawChips();applyCmp()}
+if(addf)searchBox(addf,addq,{hits:addhits,msg:addmsg},addCmp);
+drawChips();
+// 只有預設地點時馬上套用;有加入的地點時,等讀者真的看總覽頁才算,不在別頁偷偷下載分析程式
+const onOverview=()=>parse().page==='overview';
+window.addEventListener('hashchange',()=>{if(onOverview())applyCmp()});
+if(onOverview()||!chosen().cus.length)applyCmp();
 """
 
 esc = html.escape
@@ -860,21 +976,25 @@ def _week_box(week: dict | None, link: str = "") -> str:
     )
 
 
-def _hero(days: list[dict], name: str = "", slim: bool = False, low: bool = False, south: bool = False) -> str:
-    """天氣景象橫幅:太陽、雲、雨的動畫畫面。days 是 report.to_json 裡的逐日資料。
-
-    這裡只放每天的資料,畫面由瀏覽器端的 HERO_JS 依「讀者的今天」畫出來;動畫用開源的
-    Anime.js(MIT 授權),載入失敗或讀者關閉動態效果時,仍會顯示靜止的畫面。
-    """
+def _hero_rows(days: list[dict]) -> list[dict]:
+    """橫幅需要的逐日資料:天氣用語、高低溫、降雨機率、風、雲量。"""
     p50 = lambda v, default: round(v["p50"]) if isinstance(v, dict) else default
-    rows = [
+    return [
         {
             "day": d["day"], "sky": d["sky"], "hi": p50(d["tmax"], 0), "lo": p50(d["tmin"], 0), "pop": round(d["pop"] * 100),
             "wind": p50(d.get("wind"), 0), "cloud": p50(d.get("cloud"), 50),
         }
         for d in days
     ]
-    data = esc(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
+
+
+def _hero(days: list[dict], name: str = "", slim: bool = False, low: bool = False, south: bool = False) -> str:
+    """天氣景象橫幅:太陽、雲、雨的動畫畫面。days 是 report.to_json 裡的逐日資料。
+
+    這裡只放每天的資料,畫面由瀏覽器端的 HERO_JS 依「讀者的今天」畫出來;動畫用開源的
+    Anime.js(MIT 授權),載入失敗或讀者關閉動態效果時,仍會顯示靜止的畫面。
+    """
+    data = esc(json.dumps(_hero_rows(days), ensure_ascii=False, separators=(",", ":")))
     label = f' data-name="{esc(name)}"' if name else ""
     flags = (" data-slim" if slim else "") + (' data-low="1"' if low else "") + (' data-south="1"' if south else "")
     return f'<div class="hero" data-days="{data}"{label}{flags}></div>'
@@ -1513,7 +1633,7 @@ load();setInterval(load,3e5);
 """
 
 
-def _glance(names: list[str], by_place: dict[str, dict[str, dict]]) -> str:
+def _glance(names: list[str], by_place: dict[str, dict[str, dict]], index: dict[str, int]) -> str:
     """總覽的主角:各地點一週的天氣一覽表,一列一個地點、一欄一天,像地點預報的時間軸一樣簡潔。"""
     days = sorted({day for n in names for day in by_place[n]})
     head = "<th>地點</th>" + "".join(
@@ -1535,7 +1655,7 @@ def _glance(names: list[str], by_place: dict[str, dict[str, dict]]) -> str:
                 f'<span class="tt"><b>{hi:.0f}°</b> / {lo:.0f}°</span>'
                 f'<span class="pb" aria-hidden="true"><i style="width:{pop * 100:.0f}%"></i></span><small>降雨 {pop:.0%}</small></td>'
             )
-        body += f'<tr><th><a href="#/place/{i}/summary">{esc(n)}</a></th>{cells}</tr>'
+        body += f'<tr data-place="{esc(n)}"><th><a href="#/place/{index[n]}/summary">{esc(n)}</a></th>{cells}</tr>'
     return (
         '<p class="swipe">表格可以左右滑動,看後面幾天。</p>'
         f'<div class="scroll"><table class="glance"><caption>每格是天氣、最高 / 最低氣溫(°C)與降雨機率,綠色橫條越長越容易下雨。'
@@ -1544,7 +1664,7 @@ def _glance(names: list[str], by_place: dict[str, dict[str, dict]]) -> str:
     )
 
 
-def _why(names: list[str], payloads: dict[str, dict]) -> str:
+def _why(names: list[str], payloads: dict[str, dict], index: dict[str, int]) -> str:
     """一覽表下方的「為什麼」:每個地點這一週由哪些天氣系統主導,專業名稱旁附白話。"""
     rows = []
     for i, n in enumerate(names):
@@ -1554,52 +1674,106 @@ def _why(names: list[str], payloads: dict[str, dict]) -> str:
             f'{esc(st["headline"])}<small>{esc(plain.system_words(st["headline"]))}</small></li>'
             for st in stages
         )
-        rows.append(f'<div class="why-row"><a href="#/place/{i}/synoptic">{esc(n)}</a><ol>{chips}</ol></div>')
+        rows.append(f'<div class="why-row" data-place="{esc(n)}"><a href="#/place/{index[n]}/synoptic">{esc(n)}</a><ol>{chips}</ol></div>')
     return '<div class="why">' + "".join(rows) + "</div>"
 
 
-def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
-    """總覽頁:最上面是各地一週的天氣一覽表,下面才是原因、注意事項,以及各地文字說明的連結。"""
-    if not payloads or not all(n in payloads and payloads[n].get("briefing") for n in names):
-        links = "".join(f'<li><a href="#/place/{i}/summary">{esc(n)}</a></li>' for i, n in enumerate(names))
-        return f'<h1>一週天氣預報</h1><ul>{links}</ul>'
-    by_place = {n: {d["day"]: d for d in payloads[n]["days"]} for n in names}
-    lede = briefing.island_summary(
+def _cross_lede(names: list[str], payloads: dict[str, dict]) -> str:
+    """一組地點合起來的結論。只有一個地點時,「各地都有雨」不通順,改用那個地點自己的結論。"""
+    if len(names) == 1:
+        return payloads[names[0]]["briefing"].get("lede", "")
+    return briefing.island_summary(
         [
             {
                 "name": n,
                 "latitude": payloads[n]["location"].get("latitude") or 0.0,
                 "longitude": payloads[n]["location"].get("longitude") or 0.0,
                 "roles": payloads[n]["briefing"]["roles"],
-                "pops": {day: d["pop"] for day, d in by_place[n].items()},
+                "pops": {d["day"]: d["pop"] for d in payloads[n]["days"]},
             }
             for n in names
         ]
     )
+
+
+def _overview_body(names: list[str], payloads: dict[str, dict], index: dict[str, int] | None = None) -> str:
+    """總覽頁選單下面的全部內容:橫幅、一覽表、注意事項、原因與各地的文字說明。
+
+    index 是 {地名: 在「地點預報」裡的分頁位置};瀏覽器把自己加入的地點一起比較時,會用同一個
+    函式在瀏覽器裡重畫(見 browser.overview),所以預設地點與加入的地點畫法完全一樣。
+    """
+    index = index or {n: i for i, n in enumerate(names)}
+    by_place = {n: {d["day"]: d for d in payloads[n]["days"]} for n in names}
     merged: dict[tuple[str, str], list[str]] = {}
     for n in names:
         for hazard, when, _ in payloads[n]["briefing"]["hazards"]:
             merged.setdefault((hazard, when), []).append(n)
-    if merged:
-        hazards = _table([["危害", "時間", "地點"], *([h, w, "、".join(p)] for (h, w), p in merged.items())])
-    else:
-        hazards = '<p class="sub">各地這一週都沒有大雨、強風或明顯降溫的訊號。</p>'
+    # 每一列記下涉及哪些地點,瀏覽器只顯示有勾選的地點
+    rows = "".join(
+        f'<tr data-places="{esc(json.dumps(ps, ensure_ascii=False))}"><th>{esc(h)}</th><td>{esc(w)}</td><td class="where">{esc("、".join(ps))}</td></tr>'
+        for (h, w), ps in merged.items()
+    )
+    hazards = (
+        f'<div class="scroll hazards"{"" if merged else " hidden"}><table><thead><tr><th>危害</th><th>時間</th><th>地點</th></tr></thead><tbody>{rows}</tbody></table></div>'
+        f'<p class="sub nohaz"{" hidden" if merged else ""}>選的地點這一週都沒有大雨、強風或明顯降溫的訊號。</p>'
+    )
     texts = "".join(
-        f'<li><a href="#/place/{i}/plain">{esc(n)}</a>:{esc(payloads[n]["plain"]["week"]["headline"])}</li>'
-        for i, n in enumerate(names)
+        f'<li data-place="{esc(n)}"><a href="#/place/{index[n]}/plain">{esc(n)}</a>:{esc(payloads[n]["plain"]["week"]["headline"])}</li>'
+        for n in names
         if payloads[n].get("plain", {}).get("week")
     )
+    first = payloads[names[0]]
+    hero = _hero(
+        first["days"], names[0], slim=True,
+        low=any(r["kind"] == "low" for r in first["briefing"]["roles"]), south=(first["location"].get("latitude") or 0) < 0,
+    )
     return (
-        f"<h1>這一週的天氣</h1>{_hero(payloads[names[0]]['days'], names[0], slim=True, low=any(r["kind"] == "low" for r in payloads[names[0]]["briefing"]["roles"]), south=(payloads[names[0]]["location"].get("latitude") or 0) < 0)}"
-        f"{_glance(names, by_place)}"
+        f"{hero}{_glance(names, by_place, index)}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
         "<h2>為什麼:天氣系統怎麼演變</h2>"
-        f'<p class="lede">{esc(lede)}</p>'
+        f'<p class="lede" id="ovlede">{esc(_cross_lede(names, payloads))}</p>'
         '<p class="sub">各地點這一週的分段。粗體是日期,接著是主導的天氣系統,小字是白話說明;點地名看那裡的綜觀分析。</p>'
-        f"{_why(names, payloads)}"
+        f"{_why(names, payloads, index)}"
         '<p class="sub">同一個系統在各地的影響不一樣,例如東北季風下,迎風的北部與東部有雨,背風的中南部通常不下。</p>'
         + (f"<h2>各地的文字說明</h2><ul class=\"texts\">{texts}</ul>"
            '<p class="sub">點地名看那個地點每天的天氣、原因與準備建議。接下來幾小時的雨看<a href="#/radar">即時雷達</a>。</p>' if texts else "")
+    )
+
+
+MAX_PRECOMPUTED = 7  # 預設地點不超過這麼多時,先把每一種組合的結論算好(2^n − 1 種)
+
+COMPARE_HTML = """<div class="pick" id="pick"><p class="pick-h">比較的地點<small>勾選要放進下面一覽表的地點,也可以加入其他地點一起比較;設定會記在這個瀏覽器裡。</small></p>
+<div id="pickchips" role="group" aria-label="比較的地點"></div>
+<form id="addcmp" role="search"><input id="addq" type="search" autocomplete="off"
+placeholder="加入其他地點一起比較:東港、恆春鎮、東京" aria-label="加入比較的地點"><button>加入</button>
+<span id="addmsg"></span><div id="addhits"></div></form></div>"""
+
+
+def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
+    """總覽頁:可自選比較的地點;最上面是一覽表,下面才是原因、注意事項,以及各地文字說明的連結。"""
+    if not payloads or not all(n in payloads and payloads[n].get("briefing") for n in names):
+        links = "".join(f'<li><a href="#/place/{i}/summary">{esc(n)}</a></li>' for i, n in enumerate(names))
+        return f'<h1>一週天氣預報</h1><ul>{links}</ul>'
+    # 只切換預設地點時不必在瀏覽器裡跑分析程式:每一種組合的結論與每個地點的橫幅都先準備好
+    ledes = {}
+    if len(names) <= MAX_PRECOMPUTED:
+        for mask in range(1, 2 ** len(names)):
+            subset = [n for i, n in enumerate(names) if mask >> i & 1]
+            ledes["|".join(subset)] = _cross_lede(subset, payloads)
+    heroes = {
+        n: {
+            "rows": _hero_rows(payloads[n]["days"]),
+            "low": any(r["kind"] == "low" for r in payloads[n]["briefing"]["roles"]),
+            "south": (payloads[n]["location"].get("latitude") or 0) < 0,
+        }
+        for n in names
+    }
+    data = json.dumps({"names": names, "ledes": ledes, "heroes": heroes}, ensure_ascii=False, separators=(",", ":"))
+    data = data.replace("</", "<\\/")  # 放在 <script> 裡,不能出現 </script>
+    return (
+        f"<h1>這一週的天氣</h1>{COMPARE_HTML}"
+        f'<div id="ovbody">{_overview_body(names, payloads)}</div>'
+        f'<script type="application/json" id="ovdata">{data}</script>'
     )
 
 
