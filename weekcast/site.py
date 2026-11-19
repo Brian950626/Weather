@@ -189,6 +189,7 @@ table.glance{border-collapse:separate;border-spacing:0;background:var(--sheet);b
 ul.texts li{margin:6px 0}
 /* 動態效果:只在讀者沒有關閉動態效果時才播 */
 .rcol i{transform-origin:bottom}.grid td.cell i{transform-origin:left}
+@media print{[data-fxk]{opacity:1!important;transform:none!important}}
 @media (prefers-reduced-motion:no-preference){
 .js .page.on,.js .view.on{animation:fadein .35s ease-out}
 @keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -219,6 +220,10 @@ ul.texts li{margin:6px 0}
 .hero.wet{--sky1:#1a242a;--sky2:#2f3d45;--hcloud:#6c7b84;--hdark:#48565e;--cap:#f1f6f8}}
 .hero svg{position:absolute;inset:0;width:100%;height:100%;min-width:0}
 .bg3d{position:fixed;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none;display:block}
+#altitude{position:fixed;left:14px;bottom:12px;z-index:4;font-size:12px;color:var(--muted);background:color-mix(in srgb,var(--sheet) 75%,transparent);
+padding:2px 10px;border-radius:999px;pointer-events:none;opacity:0;transition:opacity .4s}
+#altitude.on{opacity:1}
+@media (max-width:760px){#altitude{bottom:64px;left:10px}}
 .hero.see{background:linear-gradient(color-mix(in srgb,var(--sky1) 40%,transparent),color-mix(in srgb,var(--sky2) 28%,transparent))}
 .hero.see .sun,.hero.see .drift,.hero.see .rain{display:none}
 #fxtoggle{font:inherit;font-size:13px;margin-left:10px;padding:2px 10px;border:1px solid var(--line);border-radius:999px;background:var(--sheet);color:var(--ink2);cursor:pointer}
@@ -855,7 +860,7 @@ def _week_box(week: dict | None, link: str = "") -> str:
     )
 
 
-def _hero(days: list[dict], name: str = "", slim: bool = False) -> str:
+def _hero(days: list[dict], name: str = "", slim: bool = False, low: bool = False, south: bool = False) -> str:
     """天氣景象橫幅:太陽、雲、雨的動畫畫面。days 是 report.to_json 裡的逐日資料。
 
     這裡只放每天的資料,畫面由瀏覽器端的 HERO_JS 依「讀者的今天」畫出來;動畫用開源的
@@ -871,7 +876,8 @@ def _hero(days: list[dict], name: str = "", slim: bool = False) -> str:
     ]
     data = esc(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
     label = f' data-name="{esc(name)}"' if name else ""
-    return f'<div class="hero" data-days="{data}"{label}{" data-slim" if slim else ""}></div>'
+    flags = (" data-slim" if slim else "") + (' data-low="1"' if low else "") + (' data-south="1"' if south else "")
+    return f'<div class="hero" data-days="{data}"{label}{flags}></div>'
 
 
 def _numbers_help() -> str:
@@ -1022,7 +1028,7 @@ def build_place(
     total = sum(ens.member_count(s) for s in ens.systems)
     week = plain.week_summary(forecast, upper_days)
     block = (
-        _hero([asdict(f) for f in forecast])
+        _hero([asdict(f) for f in forecast], low=any(r["kind"] == "low" for r in asdict(brief)["roles"]), south=lat < 0)
         + _week_box(asdict(week) if week else None, '<p class="sub">每天的原因和準備建議在下方「白話總結」分頁;想看專業的分析依據,請看其他分頁。</p>')
         + _ribbon(forecast, brief)
         + _numbers_help()
@@ -1237,7 +1243,7 @@ window.hero3d=function(){
  if(!T)return;
  if(!wanted()){if(bg){bg.stop();bg=null;key=''}return}
  const box=source()||last;
- if(box&&box.dataset.sky){last=box;const k=['sky','hi','pop','wind','tone'].map(x=>box.dataset[x]).join('|');
+ if(box&&box.dataset.sky){last=box;const k=['sky','hi','pop','wind','tone','low'].map(x=>box.dataset[x]).join('|');
   if(!bg||k!==key){if(bg)bg.stop();try{bg=scene(T,Object.assign({},box.dataset));key=k}catch(e){bg=null;key=''}}}
  const on=source();if(bg&&on){on.classList.add('see');if(window.heroPause)heroPause()}
 };
@@ -1253,7 +1259,10 @@ function cloudTexture(T,seed){const c=document.createElement('canvas');c.width=2
   gr.addColorStop(1,'rgba(255,255,255,0)');g.fillStyle=gr;g.beginPath();g.arc(x,y,rad,0,7);g.fill()}
  const t=new T.CanvasTexture(c);t.colorSpace=T.SRGBColorSpace;return t}
 // 整頁的天氣背景:一個固定在內容後面的畫布。天空在畫面上緣依天氣染色,雲在上方飄,
-// 雨或雪落滿整個畫面,大雨時閃電;捲動與滑鼠移動時,近的雲動得比遠的多。
+// 雨或雪落滿整個畫面,大雨時閃電;滑鼠移動時,近的雲動得比遠的多。
+// 往下捲動 = 從高空降到地面(對應綜觀分析的 250 → 500 → 850 hPa → 地面):頁首是噴流的
+// 高速氣流線;往下穿過雲層時有一層霧;到了頁尾,下雨天地面濺起水花、晴天有斜射的光束、
+// 下雪天積起一層雪。這一週有低壓或颱風接近時,上方多一個慢慢旋轉的螺旋雲帶。
 function scene(T,d){
  const [sun,cloud,rain0]=SCENE[d.sky]||[0,2,0],wind=+d.wind||0,cold=+d.hi<=2&&+d.pop>=20;
  const dark=matchMedia('(prefers-color-scheme: dark)').matches,tone=d.tone||'mild';
@@ -1314,6 +1323,69 @@ function scene(T,d){
   bolt=new T.Line(new T.BufferGeometry(),new T.LineBasicMaterial({color:0xf4f8ff,transparent:true,opacity:0}));bolt.renderOrder=31;S.add(bolt)}
  function newBolt(){const pts=[];let x=W*(.1+r()*.8),y=H;while(y>H-U*1.8){pts.push(new T.Vector3(x,y,0));y-=U*(.12+r()*.16);x+=(r()-.5)*U*.35}
   bolt.geometry.dispose();bolt.geometry=new T.BufferGeometry().setFromPoints(pts)}
+ // ---- 往下捲動的分層 ----
+ const lowSys=d.low==='1',spin=d.south==='1'?-1:1;
+ // 高空:噴流的高速氣流線,只在頁首附近
+ const jetN=Math.round(70*area()),jp=new Float32Array(jetN*6),js=new Float32Array(jetN*8),je=new Float32Array(jetN*2);
+ for(let i=0;i<jetN;i++){const a=[r()*3000,r(),220+r()*260,40+r()*90];for(let k=0;k<2;k++){js.set(a,(i*2+k)*4);je[i*2+k]=k}}
+ const jg=new T.BufferGeometry();jg.setAttribute('position',new T.BufferAttribute(jp,3));jg.setAttribute('aSeed',new T.BufferAttribute(js,4));jg.setAttribute('aEnd',new T.BufferAttribute(je,1));
+ const jetU={uT:u(0),uW:u(1),uH:u(1),uP:u(0),uA:u(dark?.4:.45),uC:u(dark?new T.Vector3(.8,.88,.95):new T.Vector3(.98,.99,1))};
+ const jet=new T.LineSegments(jg,new T.ShaderMaterial({transparent:true,depthWrite:false,uniforms:jetU,
+  vertexShader:'uniform float uT,uW,uH,uP;attribute vec4 aSeed;attribute float aEnd;varying float vA;void main(){'+
+   'float x=mod(aSeed.x+uT*aSeed.z,uW+aSeed.w*2.)-aSeed.w;float y=uH*(.5+aSeed.y*.48)+uP*uH*1.4;'+
+   'vec2 p=vec2(x+aEnd*aSeed.w,y+aEnd*2.);vA=aEnd;gl_Position=projectionMatrix*modelViewMatrix*vec4(p,.4,1.);}',
+  fragmentShader:'uniform float uA,uP;uniform vec3 uC;varying float vA;void main(){gl_FragColor=vec4(uC,vA*uA*(1.-smoothstep(.12,.38,uP)));}'}));
+ jet.renderOrder=15;S.add(jet);
+ // 中層:穿過雲層時的一層霧,雲越多越濃
+ const fogU={uT:u(0),uP:u(0),uA:u([0,.12,.24,.36][cloud]*(dark?.8:1)),uC:u(new T.Vector3(...shade.map(c=>c*(dark?.5:1))))};
+ const fog=new T.Mesh(new T.PlaneGeometry(1,1),new T.ShaderMaterial({transparent:true,depthWrite:false,uniforms:fogU,
+  vertexShader:'varying vec2 v;void main(){v=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+  fragmentShader:'uniform float uT,uP,uA;uniform vec3 uC;varying vec2 v;float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5);}'+
+   'float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y);}'+
+   'void main(){vec2 q=v*vec2(3.,2.)+vec2(uT*.03,uP*3.);float k=n(q)*.6+n(q*2.3)*.4;'+
+   'float band=smoothstep(.25,.45,uP)*(1.-smoothstep(.55,.75,uP));gl_FragColor=vec4(uC,uA*band*smoothstep(.3,.8,k));}'}));
+ fog.renderOrder=12;S.add(fog);
+ // 地面:下雨時濺起的水花(一圈圈擴散的漣漪)
+ let splashU=null;
+ if(base){const k=Math.round([0,20,35,55,80,110][rain0]*area()),pos=new Float32Array(k*3),sd=new Float32Array(k*4);
+  for(let i=0;i<k;i++)sd.set([r()*3000,r(),.7+r()*.9,8+r()*14],i*4);
+  const g=new T.BufferGeometry();g.setAttribute('position',new T.BufferAttribute(pos,3));g.setAttribute('aSeed',new T.BufferAttribute(sd,4));
+  splashU={uT:u(0),uW:u(1),uB:u(60),uP:u(0),uR:u(R.getPixelRatio()),uC:rainU.uC};
+  const m=new T.Points(g,new T.ShaderMaterial({transparent:true,depthWrite:false,uniforms:splashU,
+   vertexShader:'uniform float uT,uW,uB,uR;attribute vec4 aSeed;varying float vL;void main(){vL=fract(uT*aSeed.z+aSeed.y);'+
+    'vec2 p=vec2(mod(aSeed.x+floor(uT*aSeed.z+aSeed.y)*577.,uW),uB+aSeed.y*36.);gl_PointSize=(6.+vL*aSeed.w*1.6)*uR*1.5;gl_Position=projectionMatrix*modelViewMatrix*vec4(p,.7,1.);}',
+   fragmentShader:'uniform float uP;uniform vec3 uC;varying float vL;void main(){vec2 c=gl_PointCoord-.5;c.y*=3.6;float d=length(c);'+
+    'float ring=smoothstep(.5,.43,d)*smoothstep(.3,.4,d);gl_FragColor=vec4(uC,ring*(1.-vL)*smoothstep(.62,.9,uP));}'}));
+  m.renderOrder=21;S.add(m)}
+ // 地面:晴天時從太陽斜射下來的光束
+ let beamU=null;
+ if(sun){beamU={uT:u(0),uP:u(0),uC:u(new T.Vector3(1.,.93,.7))};
+  const m=new T.Mesh(new T.PlaneGeometry(1,1),new T.ShaderMaterial({transparent:true,depthWrite:false,uniforms:beamU,
+   vertexShader:'varying vec2 v;void main(){v=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+   fragmentShader:'uniform float uT,uP;uniform vec3 uC;varying vec2 v;void main(){vec2 o=v-vec2(.92,1.05);float a=atan(o.y,o.x),r=length(o);'+
+    'float b=pow(max(0.,sin(a*9.+uT*.05)),6.)*.6+pow(max(0.,sin(a*14.-uT*.04)),10.)*.4;'+
+    'gl_FragColor=vec4(uC,b*smoothstep(1.4,.2,r)*.28*smoothstep(.5,.9,uP));}'}));
+  m.renderOrder=11;S.add(m);beamU.mesh=m}
+ // 地面:下雪天積起的一層雪
+ let snowBed=null;
+ if(cold){snowBed=new T.Mesh(new T.PlaneGeometry(1,1),new T.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{uP:u(0)},
+  vertexShader:'varying vec2 v;void main(){v=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+  fragmentShader:'uniform float uP;varying vec2 v;void main(){float edge=.55+sin(v.x*23.)*.06+sin(v.x*57.)*.03;'+
+   'gl_FragColor=vec4(1.,1.,1.,smoothstep(edge,edge-.08,v.y)*.85*smoothstep(.6,1.,uP));}'}));
+  snowBed.renderOrder=22;S.add(snowBed)}
+ // 這一週有低壓或颱風接近:慢慢旋轉的螺旋雲帶(北半球逆時針、南半球順時針)
+ let spiral=null;
+ if(lowSys){spiral=new T.Mesh(new T.PlaneGeometry(1,1),new T.ShaderMaterial({transparent:true,depthWrite:false,
+  uniforms:{uT:u(0),uP:u(0),uS:u(spin),uC:u(new T.Vector3(...shade.map(c=>c*(dark?.6:1))))},
+  vertexShader:'varying vec2 v;void main(){v=uv-.5;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+  fragmentShader:'uniform float uT,uP,uS;uniform vec3 uC;varying vec2 v;void main(){float r=length(v)*2.,a=atan(v.y,v.x);'+
+   'float arm=sin(a*2.-uS*log(r+.02)*5.5+uS*uT*.35);float body=smoothstep(.15,.65,arm*.5+.5)*smoothstep(1.,.25,r)*smoothstep(.04,.14,r);'+
+   'gl_FragColor=vec4(uC,body*.5*(1.-smoothstep(.45,.8,uP)));}'}));
+  spiral.renderOrder=3;S.add(spiral)}
+ // 背景目前在哪個高度:左下角的小字
+ const alt=document.createElement('div');alt.id='altitude';alt.setAttribute('aria-hidden','true');document.body.append(alt);
+ const BANDS=[[.22,'高空 · 約 10 公里 · 250 hPa 噴流'],[.47,'中層 · 約 5.5 公里 · 500 hPa'],[.72,'低層 · 約 1.5 公里 · 850 hPa 雲層'],[2,'地面']];
+ let pr=0,band='';
  function layout(){W=innerWidth||1;H=innerHeight||1;U=Math.max(150,Math.min(260,H*.28));R.setSize(W,H,false);
   Object.assign(cam,{left:0,right:W,top:H,bottom:0});cam.updateProjectionMatrix();
   skyMesh.scale.set(W,H,1);skyMesh.position.set(W/2,H/2,-1);
@@ -1321,14 +1393,25 @@ function scene(T,d){
   if(flash){flash.scale.set(W,H,1);flash.position.set(W/2,H/2,2)}
   if(rainU){rainU.uW.value=W;rainU.uH.value=H;rainU.uU.value=U/190}
   if(snowU){snowU.uW.value=W;snowU.uH.value=H}
+  jetU.uW.value=W;jetU.uH.value=H;fog.scale.set(W,H,1);fog.position.set(W/2,H/2,1.5);
+  if(splashU){splashU.uW.value=W;splashU.uB.value=innerWidth<761?64:14}
+  if(beamU){beamU.mesh.scale.set(W,H,1);beamU.mesh.position.set(W/2,H/2,.2)}
+  if(snowBed){snowBed.scale.set(W,U*.5,1);snowBed.position.set(W/2,U*.25+(innerWidth<761?52:0),2.2)}
+  if(spiral){const sp=U*3.4;spiral.scale.set(sp,sp,1)}
   clouds.forEach(m=>{const sz=U*(.32+m.userData.depth*.42)*m.userData.w;m.scale.set(sz*2,sz,1);m.position.z=m.userData.depth})}
  layout();addEventListener('resize',layout);
  let px=0,tx=0,sy=0;const move=e=>{tx=e.clientX/(innerWidth||1)-.5};addEventListener('pointermove',move,{passive:true});
  let last=performance.now(),t=0,raf=0;
  function frame(now){const dt=Math.min(.05,(now-last)/1000);last=now;t+=dt;px+=(tx-px)*.05;sy+=((scrollY||0)-sy)*.12;
-  if(sunMesh){sunMesh.material.uniforms.uT.value=t;sunMesh.position.set(W*.86-px*12,H-U*.55+sy*.04,0)}
+  const room=(document.documentElement.scrollHeight||0)-H;pr+=((room>200?Math.min(1,(scrollY||0)/room):0)-pr)*.1;
+  jetU.uT.value=t;jetU.uP.value=pr;fogU.uT.value=t;fogU.uP.value=pr;
+  if(splashU){splashU.uT.value=t;splashU.uP.value=pr}if(beamU){beamU.uT.value=t;beamU.uP.value=pr}if(snowBed)snowBed.material.uniforms.uP.value=pr;
+  if(spiral){spiral.material.uniforms.uT.value=t;spiral.material.uniforms.uP.value=pr;spiral.position.set(W*.78-px*20,H-U*.9+pr*H*.9,.1)}
+  const b=room>200?BANDS.find(x=>pr<x[0])[1]:'';if(b!==band){band=b;alt.textContent=b?'背景高度:'+b:'';alt.classList.toggle('on',!!b);
+   clearTimeout(alt.t);if(b)alt.t=setTimeout(()=>alt.classList.remove('on'),2600)}
+  if(sunMesh){sunMesh.material.uniforms.uT.value=t;sunMesh.position.set(W*.86-px*12,H-U*.55+pr*U*.4,0)}
   clouds.forEach(m=>{const q=m.userData;q.x+=q.speed*dt/W;if(q.x>1.2)q.x=-.2;
-   m.position.x=W*q.x-px*(10+q.depth*40);m.position.y=H-U*(.2+q.y)+sy*(.03+q.depth*.09)});
+   m.position.x=W*q.x-px*(10+q.depth*40);m.position.y=H-U*(.2+q.y)+pr*H*(.5+q.depth*.9)});
   if(rainU)rainU.uT.value=t;if(snowU)snowU.uT.value=t;
   if(storm){if(t>nextFlash){flashAt=t;nextFlash=t+6+r()*7;newBolt()}
    const f=t-flashAt,lit=f<.09?1:f<.16?.15:f<.24?.8:Math.max(0,1-(f-.24)*3);
@@ -1336,7 +1419,7 @@ function scene(T,d){
   R.render(S,cam);raf=requestAnimationFrame(frame)}
  raf=requestAnimationFrame(frame);
  return {stop(){cancelAnimationFrame(raf);removeEventListener('resize',layout);removeEventListener('pointermove',move);
-  S.traverse(o=>{o.geometry&&o.geometry.dispose();o.material&&o.material.dispose()});tex.forEach(x=>x.dispose());R.dispose();canvas.remove()}};
+  S.traverse(o=>{o.geometry&&o.geometry.dispose();o.material&&o.material.dispose()});tex.forEach(x=>x.dispose());R.dispose();canvas.remove();alt.remove()}};
 }
 """
 
@@ -1347,29 +1430,34 @@ FX_JS = """
 const calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function root(){const pg=document.querySelector('.page.on');if(!pg)return null;
  return pg.dataset.page==='place'?pg.querySelector('article.place.on'):pg}
-function fresh(box,sel){return [...box.querySelectorAll(sel)].filter(el=>{
- if(el.dataset.fx||!el.getClientRects().length)return false;el.dataset.fx='1';return true})}
 // 時間軸上的圖示換成內嵌的圖形,太陽才轉得動、雨才落得下來(<use> 引用的圖形無法個別做動畫)
 function liveIcons(box){box.querySelectorAll('.ribbon .wx svg.ico, .glance td.today svg.ico').forEach(svg=>{
  if(svg.dataset.live)return;const u=svg.querySelector('use');if(!u)return;
  const sym=document.getElementById((u.getAttribute('href')||'').slice(1));if(!sym)return;
  svg.innerHTML=sym.innerHTML;svg.dataset.live='1';svg.classList.add('live')})}
-// 淡入到元素原本的透明度(例如「已過」的日子本來就是半透明),播完把行內樣式拿掉,交還給 CSS
+// 播完把行內樣式拿掉,交還給 CSS(例如「已過」的日子本來就是半透明)
 const settle=els=>()=>els.forEach(e=>{e.style.opacity='';e.style.transform=''});
-const base=el=>getComputedStyle(el).opacity;
-function play(targets,props){if(targets.length)anime(Object.assign({targets,easing:'easeOutCubic'},props))}
+const base=el=>+el.dataset.op||1;
+const hide=el=>{el.style.opacity=0},flat=a=>el=>{el.style.transform='scale'+a+'(0)'};
+// 往下捲時,每個元素進到畫面才播:雨柱像雨滴落下彈起、溫度條長出來、卡片與表格列依序滑入
+const KINDS=[
+ ['.ribbon .d',hide,{opacity:[0,base],translateY:[18,0],delay:anime.stagger(60),duration:560}],
+ ['.tcol i',flat('Y'),{scaleY:[0,1],delay:anime.stagger(60,{start:150}),duration:750,easing:'easeOutBack'}],
+ ['.rcol i',flat('Y'),{scaleY:[0,1],delay:anime.stagger(60,{start:260}),duration:950,easing:'easeOutBounce'}],
+ ['.grid td.cell i, .glance .pb i',flat('X'),{scaleX:[0,1],delay:anime.stagger(14,{start:120}),duration:650,easing:'easeOutQuart'}],
+ ['h2, p.lede',hide,{opacity:[0,base],translateX:[-18,0],delay:anime.stagger(80),duration:600}],
+ ['.week, .stg, .pd, .reason, .why-row, details.how, .sheet, svg[viewBox^="0 0 760"]',hide,{opacity:[0,base],translateY:[22,0],delay:anime.stagger(80),duration:620}],
+ ['tbody tr, .view ul > li, .page ul > li',hide,{opacity:[0,base],translateX:[-12,0],delay:anime.stagger(30),duration:420}]];
+let io=null;
+function watch(){if(io)return io;
+ io=new IntersectionObserver(es=>{const groups=new Map();
+  es.forEach(e=>{if(!e.isIntersecting)return;io.unobserve(e.target);const k=e.target.dataset.fxk;if(!groups.has(k))groups.set(k,[]);groups.get(k).push(e.target)});
+  groups.forEach((els,k)=>anime(Object.assign({targets:els,easing:'easeOutCubic',complete:settle(els)},KINDS[k][2])))},{threshold:.08});
+ return io}
 window.fxRun=function(){const box=root();if(!box)return;liveIcons(box);
- if(calm||!window.anime)return;
- const days=fresh(box,'.ribbon .d');
- play(days,{opacity:[0,base],translateY:[16,0],delay:anime.stagger(60),duration:560,complete:settle(days)});
- play(fresh(box,'.tcol i'),{scaleY:[0,1],delay:anime.stagger(60,{start:150}),duration:750,easing:'easeOutBack'});
- play(fresh(box,'.rcol i'),{scaleY:[0,1],delay:anime.stagger(60,{start:260}),duration:700,easing:'easeOutQuart'});
- play(fresh(box,'.grid td.cell i'),{scaleX:[0,1],delay:anime.stagger(12),duration:600});
- const cards=fresh(box,'.week, .stg, .pd, .reason, .wkd, .stages, .sheet');
- play(cards,{opacity:[0,base],translateY:[12,0],delay:anime.stagger(70),duration:520,complete:settle(cards)});
- const rows=fresh(box,'table.glance tbody tr, .why-row, .view.on table:not(.grid) tbody tr');
- play(fresh(box,'.glance .pb i'),{scaleX:[0,1],delay:anime.stagger(18,{start:200}),duration:650,easing:'easeOutQuart'});
- play(rows,{opacity:[0,base],translateX:[-10,0],delay:anime.stagger(35),duration:420,complete:settle(rows)});
+ if(calm||!window.anime||!('IntersectionObserver' in window))return;const w=watch();
+ KINDS.forEach(([sel,prime],k)=>box.querySelectorAll(sel).forEach(el=>{
+  if(el.dataset.fxk||!el.getClientRects().length)return;el.dataset.fxk=k;el.dataset.op=getComputedStyle(el).opacity;prime(el);w.observe(el)}));
  // 橫幅上的高溫由低溫往上數,像電視氣象的數字跳動
  box.querySelectorAll('.hero .cap .t').forEach(t=>{if(t.dataset.fx)return;t.dataset.fx='1';
   const m=t.textContent.match(/(-?\\d+)°\\s*\\/\\s*(-?\\d+)°/);if(!m)return;const hi=+m[1],lo=+m[2],o={v:lo};
@@ -1502,7 +1590,7 @@ def _overview(names: list[str], payloads: dict[str, dict] | None) -> str:
         if payloads[n].get("plain", {}).get("week")
     )
     return (
-        f"<h1>這一週的天氣</h1>{_hero(payloads[names[0]]['days'], names[0], slim=True)}"
+        f"<h1>這一週的天氣</h1>{_hero(payloads[names[0]]['days'], names[0], slim=True, low=any(r["kind"] == "low" for r in payloads[names[0]]["briefing"]["roles"]), south=(payloads[names[0]]["location"].get("latitude") or 0) < 0)}"
         f"{_glance(names, by_place)}"
         f"<h2>注意事項與劇烈天氣</h2>{hazards}"
         "<h2>為什麼:天氣系統怎麼演變</h2>"
