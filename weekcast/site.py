@@ -50,11 +50,11 @@ FONTS = "https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&di
 # 配色取自手繪天氣圖的習慣:降雨區塗綠、暖色用紅、冷色用藍、槽線用褐色。
 CSS = """
 :root{--paper:#f1f4f1;--sheet:#fcfdfb;--ink:#17201c;--ink2:#44524b;--muted:#69766e;--line:#d3dbd5;
---sun:#e39a0c;--cloud:#a9b6af;--cloud-dark:#6d7a73;--rain:#2c7a57;--rain-soft:#d2e7da;--warm:#bf4226;--warm-soft:#f3d8ce;--cold:#2a5ca6;--cold-soft:#d5e0f1;--ochre:#8a5f12;--ochre-soft:#f0e4c6;
+--sun:#e39a0c;--cloud:#a9b6af;--cloud-dark:#6d7a73;--rain:#2c7a57;--rain-soft:#d2e7da;--rain-mid:#8fc4a8;--warm:#bf4226;--warm-soft:#f3d8ce;--cold:#2a5ca6;--cold-soft:#d5e0f1;--ochre:#8a5f12;--ochre-soft:#f0e4c6;
 --kai:"LXGW WenKai TC","BiauKai","DFKai-SB","Kaiti TC",KaiTi,serif;
 --sans:system-ui,-apple-system,"PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif}
 @media (prefers-color-scheme:dark){:root{--paper:#121815;--sheet:#1a221e;--ink:#e8eee9;--ink2:#b9c5bd;--muted:#93a198;--line:#2f3a34;
---sun:#f3c04a;--cloud:#a3b1a9;--cloud-dark:#70807a;--rain:#5dbf93;--rain-soft:#1f4a37;--warm:#f08462;--warm-soft:#5a2a1d;--cold:#7fa8ea;--cold-soft:#22375c;--ochre:#d8ae55;--ochre-soft:#4a3a16}}
+--sun:#f3c04a;--cloud:#a3b1a9;--cloud-dark:#70807a;--rain:#5dbf93;--rain-soft:#1f4a37;--rain-mid:#3a7f61;--warm:#f08462;--warm-soft:#5a2a1d;--cold:#7fa8ea;--cold-soft:#22375c;--ochre:#d8ae55;--ochre-soft:#4a3a16}}
 *{box-sizing:border-box}
 html{scroll-padding-top:60px}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.7 var(--sans);font-variant-numeric:tabular-nums}
@@ -123,6 +123,15 @@ details.nums dt{font-weight:600;color:var(--ink);white-space:nowrap}details.nums
 .tcol i{display:block;width:12px;min-height:6px;border-radius:2px;background:linear-gradient(var(--warm),var(--cold))}
 .rcol{width:54px;height:38px;display:flex;align-items:flex-end;border-bottom:1px solid var(--ink2)}
 .rcol i{display:block;width:100%;background:var(--rain)}
+.rcol i,.pcol u i{background:linear-gradient(to top,var(--rain) var(--m,100%),var(--rain-mid) var(--m,100%))}
+.grid td.cell>i{background:linear-gradient(to right,var(--rain) var(--m,100%),var(--rain-mid) var(--m,100%))}
+.pcol{display:flex;gap:3px;align-items:flex-start}
+.pcol span{display:flex;flex-direction:column;align-items:center;width:19px;line-height:1.25}
+.pcol u{display:flex;align-items:flex-end;width:13px;height:38px;border-bottom:1px solid var(--ink2)}
+.pcol u i{display:block;width:100%;min-height:1px}
+.pcol b{font-size:11px;font-weight:600;margin-top:2px}.pcol b small{display:none}
+.pcol em{font-style:normal;font-size:11px;color:var(--muted);width:1em;overflow:hidden;white-space:nowrap}
+.pcol .na b{color:var(--muted)}
 .pop{font-size:14px;font-weight:600}
 .conf{display:inline-flex;align-items:center;gap:2px;font-size:13px;color:var(--ink2);white-space:nowrap}
 .conf i{width:6px;height:11px;background:var(--line)}
@@ -269,9 +278,11 @@ svg .val{fill:var(--ink2)}svg .gridline{stroke:var(--line)}
 svg .hi{fill:var(--warm-soft);stroke:var(--warm)}svg .lo{fill:var(--cold-soft);stroke:var(--cold)}svg .rn{fill:var(--rain-soft);stroke:var(--rain)}
 svg .whi{stroke:var(--warm)}svg .wlo{stroke:var(--cold)}svg .wrn{stroke:var(--rain)}
 #tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--sheet);padding:6px 10px;border-radius:4px;font-size:13px;line-height:1.5;white-space:pre;display:none;z-index:9}
-.grid td.cell{position:relative;min-width:128px;white-space:nowrap}
+.grid td.cell{position:relative;min-width:150px;white-space:nowrap;background:color-mix(in srgb,var(--rain-soft) var(--p,0%),transparent)}
 .grid td.cell b{font-size:15px}.grid td.cell span{color:var(--ink2);margin-left:6px}
-.grid td.cell i{position:absolute;left:0;bottom:0;height:3px;background:var(--rain)}
+.grid td.cell .rn{font-size:13px;color:var(--ink2);margin-top:2px}.grid td.cell .rn strong{color:var(--ink)}
+.grid td.cell .hv{display:block;color:var(--rain);font-weight:600}
+.grid td.cell>i{position:absolute;left:0;bottom:0;height:4px}
 #radar .bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
 #rtime{font-size:14px;color:var(--ink2);margin-left:auto}
 #map{height:min(64vh,520px);min-height:340px;border-radius:4px;background:var(--line)}
@@ -291,11 +302,15 @@ details.nums dl{grid-template-columns:1fr}details.nums dt{margin-top:6px}
 .tabs{position:static;flex-wrap:wrap;overflow:visible}.tabs button{padding:9px 10px 5px;font-size:15px}
 .ribbon{grid-template-columns:1fr;min-width:0}
 .stage{grid-column:auto!important;order:var(--o);border-left:0!important}
-.d{order:var(--o);display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"date wx temp" "pop pop conf";align-items:center;gap:2px 12px;text-align:left;padding:9px 12px;border-left:0!important;border-bottom:1px solid var(--line)}
+.d{order:var(--o);display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"date wx temp" "pop pop conf" "per per per";align-items:center;gap:2px 12px;text-align:left;padding:9px 12px;border-left:0!important;border-bottom:1px solid var(--line)}
 .d b{grid-area:date}.d .wx{grid-area:wx;min-height:0;font-weight:600;white-space:nowrap}
 .d .wx .ico{display:inline-block;width:30px;height:30px;margin:0 6px 0 0;vertical-align:-9px}.d .pop{grid-area:pop}
 .tcol{grid-area:temp;height:auto;flex-direction:row;gap:3px;font-size:15px}.tcol s,.tcol i,.rcol{display:none}
 .tcol span:last-of-type::before{content:"/ ";color:var(--muted)}
+.pcol{grid-area:per;gap:6px;justify-content:space-between;margin-top:2px}
+.pcol span{flex:1;width:auto;flex-direction:row;flex-wrap:wrap;justify-content:center;column-gap:4px;background:var(--rain-soft);border-radius:3px;padding:3px 0 0;overflow:hidden;position:relative}
+.pcol em{order:-1;width:auto;font-size:12px;color:var(--ink2)}.pcol b{font-size:13px;margin:0}.pcol b small{display:inline;font-size:11px}
+.pcol u{order:2;flex-basis:100%;height:4px;border:0;margin-top:3px}.pcol u i{height:100%!important;width:var(--w,0);min-height:0;background:linear-gradient(to right,var(--rain) var(--m,100%),var(--rain-mid) var(--m,100%))}
 .d .conf{grid-area:conf;flex-wrap:nowrap;justify-self:end}.d .conf em{flex-basis:auto;margin-left:5px}
 .swipe{display:block}.wide{display:none}
 .hero[data-slim]{height:118px}
@@ -669,8 +684,52 @@ def _day(day: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _ribbon(forecast, brief: briefing.Briefing) -> str:
-    """地點頁最上面的時間軸:上排是時段與主要影響系統,下面每天一欄。"""
+def _mm(value: float) -> str:
+    """雨量的寫法:不到 10 mm 寫到小數一位,0.05 以下寫 0。"""
+    if value < 0.05:
+        return "0"
+    return f"{value:.1f}" if value < 10 else f"{value:.0f}"
+
+
+def _period_tip(day: str, name: str, c) -> str:
+    lines = [f"{report._label(day)} {name}", f"降雨機率 {c.pop:.0%}(6 小時內下到 0.5 mm 以上)"]
+    if c.pop_5mm is not None:
+        lines.append(f"下到 5 mm 以上(要撐傘){c.pop_5mm:.0%}、15 mm 以上(雨勢明顯){c.pop_15mm:.0%}")
+    lines.append(f"雨量中位數 {_mm(c.precip.p50)} mm,偏多時 {_mm(c.precip.p90)} mm")
+    return "\n".join(lines)
+
+
+def _rain_bar(c, vertical: bool) -> str:
+    """降雨機率的長條:淺色是有雨的機率,深色的部分是下到 5 mm 以上的機率。"""
+    pop = max(c.pop, 0.0)
+    strong = min(c.pop_5mm or 0.0, pop)
+    inner = f"{strong / pop * 100:.0f}%" if pop > 0 else "0%"
+    if vertical:  # 直條;手機版改畫成橫條時用 --w 當長度
+        return f'<i style="height:{pop * 100:.0f}%;--w:{pop * 100:.0f}%;--m:{inner}"></i>'
+    return f'<i style="width:{pop * 100:.0f}%;--m:{inner}"></i>'
+
+
+def _period_bars(day: str, cells: dict) -> str:
+    """時間軸每天底下的四根小直條:凌晨、上午、下午、晚上的降雨機率。"""
+    spans = []
+    for name, _, _ in periods.PERIODS:
+        c = cells.get(name)
+        if c is None or c.pop is None or c.precip is None:
+            spans.append(f'<span class="na"><u></u><b>–</b><em>{name}</em></span>')
+            continue
+        spans.append(
+            f'<span data-tip="{esc(_period_tip(day, name, c))}"><u>{_rain_bar(c, True)}</u>'
+            f"<b>{c.pop * 100:.0f}<small>%</small></b><em>{name}</em></span>"
+        )
+    return f'<div class="pcol" aria-label="各時段降雨機率">{"".join(spans)}</div>'
+
+
+def _ribbon(forecast, brief: briefing.Briefing, period_list=None) -> str:
+    """地點頁最上面的時間軸:上排是時段與主要影響系統,下面每天一欄。
+
+    有時段資料時,每天底下畫凌晨、上午、下午、晚上四根降雨機率的小直條;沒有時畫整天的一根。
+    """
+    table = periods.by_day(period_list) if period_list else {}
     low = min(f.tmin.p50 for f in forecast)
     high = max(f.tmax.p50 for f in forecast)
     parts = [f'<div class="ribwrap"><div class="ribbon" style="--n:{len(forecast)}">']
@@ -696,13 +755,23 @@ def _ribbon(forecast, brief: briefing.Briefing) -> str:
             f'<span class="wx">{_icon(f.sky)}{esc(f.sky)}</span>'
             f'<div class="tcol"><s style="flex:{high - f.tmax.p50:.2f}"></s><span>{f.tmax.p50:.0f}°</span>'
             f'<i style="flex:{max(f.tmax.p50 - f.tmin.p50, 0.1):.2f}"></i><span>{f.tmin.p50:.0f}°</span><s style="flex:{f.tmin.p50 - low:.2f}"></s></div>'
-            f'<div class="rcol"><i style="height:{f.pop * 100:.0f}%"></i></div><span class="pop">降雨 {f.pop:.0%}</span>'
+            + (
+                _period_bars(f.day, table[f.day])
+                if any(c.pop is not None for c in table.get(f.day, {}).values())
+                else f'<div class="rcol"><i style="height:{f.pop * 100:.0f}%"></i></div>'
+            )
+            + f'<span class="pop">全天降雨 {f.pop:.0%}</span>'
             f"{_meter(f.confidence_label)}</div>"
         )
     parts.append("</div></div>")
     parts.append(
-        '<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;綠色柱是降雨機率;方格越多,信心度越高。'
-        "時段的顏色:綠色是降雨系統、藍色是冷空氣、黃褐色是天氣穩定;時段名稱下方的小字是白話說明。</p>"
+        '<p class="key">直條的上端是高溫、下端是低溫,各天畫在同一個刻度上;'
+        + (
+            "底下四根綠色小柱是凌晨、上午、下午、晚上各 6 小時的降雨機率(數字是 %),柱子裡深綠的部分是雨量達 5 毫米、需要撐傘的機率;"
+            if table
+            else "綠色柱是降雨機率;"
+        )
+        + "方格越多,信心度越高。時段的顏色:綠色是降雨系統、藍色是冷空氣、黃褐色是天氣穩定;時段名稱下方的小字是白話說明。</p>"
     )
     return "".join(parts)
 
@@ -770,7 +839,10 @@ def _rain_chart(forecast) -> str:
 
 
 def _period_grid(rows) -> str:
-    """每天一列、四個時段各一格;底部的橫條長度是降雨機率。"""
+    """每天一列、四個時段各一格:氣溫與天氣,下一行是降雨機率與雨量多寡。
+
+    格子的底色越深越容易下雨;底部橫條的長度是降雨機率,深色部分是下到 5 mm 以上的機率。
+    """
     head = "".join(f"<th>{name} {start:02d}–{end:02d}</th>" for name, start, end in periods.PERIODS)
     body = []
     for day, cells in periods.by_day(rows).items():
@@ -783,13 +855,20 @@ def _period_grid(rows) -> str:
             if c.pop is None or c.precip is None:  # 資料沒有涵蓋到這個時段結束,雨量不完整
                 tds.append(f'<td class="cell"><b>{c.temp.p50:.0f}°</b></td>')
                 continue
-            tip = (
-                f"{report._label(day)} {name}\n氣溫 {c.temp.p50:.0f}°C(範圍 {c.temp.p10:.0f}–{c.temp.p90:.0f})\n"
-                f"降雨機率 {c.pop:.0%}\n雨量中位數 {c.precip.p50:.1f} mm,偏多時 {c.precip.p90:.1f} mm"
-            )
+            tip = _period_tip(day, name, c).replace("\n", f"\n氣溫 {c.temp.p50:.0f}°C(範圍 {c.temp.p10:.0f}–{c.temp.p90:.0f})\n", 1)
+            if c.precip.p90 < 0.05:
+                amount = "幾乎沒有雨量"
+            elif c.precip.p50 < 0.05:
+                amount = f"多半沒雨,多則 {_mm(c.precip.p90)} mm"
+            else:
+                amount = f"約 {_mm(c.precip.p50)} mm,多則 {_mm(c.precip.p90)}"
+            heavier = ""
+            if (c.pop_5mm or 0) >= 0.05:
+                heavier = f'<small class="hv">≥5 mm {c.pop_5mm:.0%}' + (f"、≥15 mm {c.pop_15mm:.0%}" if (c.pop_15mm or 0) >= 0.05 else "") + "</small>"
             tds.append(
-                f'<td class="cell" data-tip="{esc(tip)}">{_icon(c.sky)}<b>{c.temp.p50:.0f}°</b><span>{esc(c.sky)} {c.pop:.0%}</span>'
-                f'<i style="width:{c.pop * 100:.0f}%"></i></td>'
+                f'<td class="cell" style="--p:{c.pop * 100:.0f}%" data-tip="{esc(tip)}">{_icon(c.sky)}<b>{c.temp.p50:.0f}°</b><span>{esc(c.sky)}</span>'
+                f'<div class="rn"><strong>降雨 {c.pop:.0%}</strong> {amount}{heavier}</div>'
+                f"{_rain_bar(c, False)}</td>"
             )
         body.append("<tr>" + "".join(tds) + "</tr>")
     return f'<div class="scroll"><table class="grid"><thead><tr><th>日期</th>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
@@ -834,9 +913,10 @@ def _daily_view(forecast, brief, period_list) -> str:
     ]
     if period_list:
         parts += [
-            "<h2>一天之內:凌晨、上午、下午、晚上</h2>",
-            '<p class="sub">每格是該時段的氣溫、天氣與 6 小時內的降雨機率,底部橫條越長越容易下雨。鋒面晚到半天,整天的預報仍然對,'
-            "時段卻會整個錯開,所以三天以後的時段只當參考。</p>",
+            "<h2>一天之內:凌晨、上午、下午、晚上的降雨機率與雨量</h2>",
+            '<p class="sub">每格第一行是該時段的氣溫與天氣;第二行是 6 小時內的降雨機率和雨量(中位數,多則是偏多時的 90 百分位),'
+            "雨可能下得多時再列出下到 5 毫米(要撐傘)和 15 毫米(雨勢明顯)以上的機率。格子底色越深、底部橫條越長越容易下雨,"
+            "橫條的深色部分是下到 5 毫米以上的機率。鋒面晚到半天,整天的預報仍然對,時段卻會整個錯開,所以三天以後的時段只當參考。</p>",
             _period_grid(period_list),
         ]
     return "".join(parts)
@@ -1150,7 +1230,7 @@ def build_place(
     block = (
         _hero([asdict(f) for f in forecast], low=any(r["kind"] == "low" for r in asdict(brief)["roles"]), south=lat < 0)
         + _week_box(asdict(week) if week else None, '<p class="sub">每天的原因和準備建議在下方「白話總結」分頁;想看專業的分析依據,請看其他分頁。</p>')
-        + _ribbon(forecast, brief)
+        + _ribbon(forecast, brief, period_list)
         + _numbers_help()
         + f'<p class="sub">預報取自最接近的模式格點({abs(lat):.2f}°{"N" if lat >= 0 else "S"} {abs(lon):.2f}°{"E" if lon >= 0 else "W"},'
         f"格點間距約 25 公里,所以相鄰鄉鎮的結果會很接近),綜合 {total} 個系集成員(同一批模式算了 {total} 次)的結果。</p>"

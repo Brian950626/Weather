@@ -134,7 +134,7 @@ def uncertainty(forecast: list[DayForecast]) -> list[str]:
 
 
 def period_rows(rows: list[PeriodForecast]) -> list[list[str]]:
-    """每天一列、四個時段各一格:「氣溫 降雨機率」。"""
+    """每天一列、四個時段各一格:「氣溫 天氣 降雨機率(≥5mm 的機率)」。"""
     table = [["日期", *(f"{name} {start:02d}–{end:02d}" for name, start, end in PERIODS)]]
     for day, cells in by_day(rows).items():
         line = [_label(day)]
@@ -145,7 +145,10 @@ def period_rows(rows: list[PeriodForecast]) -> list[list[str]]:
             elif cell.pop is None:  # 資料沒有涵蓋到這個時段結束,雨量不完整
                 line.append(f"{cell.temp.p50:.0f}°")
             else:
-                line.append(f"{cell.temp.p50:.0f}° {cell.sky} {cell.pop:.0%}")
+                text = f"{cell.temp.p50:.0f}° {cell.sky} {cell.pop:.0%}"
+                if (cell.pop_5mm or 0) >= 0.05:  # 雨可能下得多時,補上下到 5 mm 以上的機率
+                    text += f"(≥5mm {cell.pop_5mm:.0%})"
+                line.append(text)
         table.append(line)
     return table
 
@@ -364,7 +367,7 @@ def render(
         lines += [brief.lede, *(f"• 時段{'一二三'[s.index - 1]} {s.summary}" for s in brief.stages), ""]
     lines += _table(forecast)
     if period_list:
-        lines += ["", "時段預報(氣溫、天氣、6 小時內降雨機率)", *_grid(period_rows(period_list))]
+        lines += ["", "時段預報(氣溫、天氣、6 小時內降雨機率;括號是雨量達 5 mm 以上的機率)", *_grid(period_rows(period_list))]
     lines += ["", "重點", *(f"• {line}" for line in highlights(forecast))]
     if signal_list:
         lines += ["", "天氣型態(氣壓與高空場)"]

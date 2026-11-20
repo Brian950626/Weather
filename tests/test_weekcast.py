@@ -1059,6 +1059,17 @@ class PeriodTest(unittest.TestCase):
         # 標示 00:00 的 9 mm 是前一天晚上下的,不屬於今天;標示隔天 00:00 的 6 mm 屬於今天晚上
         self.assertEqual([rows[n].precip.p50 for n in rows], [0, 4, 0, 6])
 
+    def test_chance_of_more_rain_in_each_period(self):
+        from weekcast import periods
+
+        # 上午 2+4=6 mm(到撐傘門檻、不到 15 mm),下午 9+8=17 mm(雨勢明顯),晚上只有 1 mm
+        rows = {r.name: r for r in periods.period_forecast(self.raw([0, 0, 0, 2, 4, 9, 8, 0, 1]), 1)}
+        self.assertEqual([rows[n].pop for n in rows], [0, 1, 1, 1])
+        self.assertEqual([rows[n].pop_5mm for n in rows], [0, 1, 1, 0])
+        self.assertEqual([rows[n].pop_15mm for n in rows], [0, 0, 1, 0])
+        self.assertIn("(≥5mm 100%)", report.period_rows(list(rows.values()))[1][2])
+        self.assertNotIn("≥5mm", report.period_rows(list(rows.values()))[1][4])
+
     def test_period_totals_add_up_to_the_day(self):
         from weekcast import periods
 
@@ -1114,6 +1125,11 @@ class PeriodTest(unittest.TestCase):
             page = (Path(tmp) / "index.html").read_text(encoding="utf-8")
             data = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))
         self.assertEqual(page.count('class="cell"'), 28)
+        # 時間軸每天有四根時段降雨的小柱;最後一晚資料不完整,畫成「–」
+        self.assertEqual(page.count('class="pcol"'), 7)
+        self.assertEqual(page.count('<span class="na">'), 1)
+        self.assertIn("下到 5 mm 以上(要撐傘)", page)
+        self.assertIn("pop_5mm", data["places"]["台北"]["periods"][0])
         self.assertIn('id="radar"', page)
         self.assertIn('data-lat="25.0"', page)
         self.assertEqual(len(data["places"]["台北"]["periods"]), 28)
