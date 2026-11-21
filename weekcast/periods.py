@@ -2,7 +2,7 @@
 
 逐日預報看不出雨是早上下還是晚上下。這裡用每 3 小時一筆的系集資料,
 以同樣的方法(所有成員合併、各系集等權重)算出每個 6 小時時段的氣溫、
-降雨機率與雲量。
+降雨機率、雨量多寡(下到 5 mm、15 mm 以上的機率)與雲量。
 
 時效越遠,時段的可信度下降得比整天快:鋒面晚到半天,整天的預報仍然對,
 時段預報卻會整個錯開。
@@ -26,6 +26,9 @@ from .systems import PERIOD_VARS
 
 PERIODS = (("凌晨", 0, 6), ("上午", 6, 12), ("下午", 12, 18), ("晚上", 18, 24))
 RAIN_MM = 0.5  # 6 小時內達此雨量算有雨(逐日用 1 mm,時段較短所以門檻較低)
+# 雨量多寡的兩個門檻(6 小時):5 mm 是出門要撐傘的雨,15 mm 是雨勢明顯、路面積水的雨
+UMBRELLA_MM = 5.0
+HEAVY_MM = 15.0
 
 
 @dataclass
@@ -38,6 +41,8 @@ class PeriodForecast:
     pop: float | None
     cloud: Spread | None
     sky: str = ""
+    pop_5mm: float | None = None  # 6 小時雨量達 UMBRELLA_MM 的成員比例
+    pop_15mm: float | None = None  # 6 小時雨量達 HEAVY_MM 的成員比例
 
 
 def _pool(by_system: dict[str, list[float]]):
@@ -89,6 +94,8 @@ def period_forecast(raw: dict, days: int | None = None) -> list[PeriodForecast]:
                 precip=Spread.of(rain),
                 pop=wfraction(rain, lambda v: v >= RAIN_MM) if rain else None,
                 cloud=Spread.of(cloud),
+                pop_5mm=wfraction(rain, lambda v: v >= UMBRELLA_MM) if rain else None,
+                pop_15mm=wfraction(rain, lambda v: v >= HEAVY_MM) if rain else None,
             )
             if row.pop is not None and row.precip is not None:
                 # describe_sky 的雨量門檻是整天的量,時段只有四分之一天,換算後再判斷
